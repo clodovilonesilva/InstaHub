@@ -14,27 +14,41 @@ import {
   CheckSquare,
   Square,
   UserPlus,
+  Calendar,
+  Clock,
+  UserMinus,
+  Sparkles,
 } from 'lucide-react';
-import type { UserRecord, FilterCategory } from '../../types';
-import { db, toggleUserProtected } from '../../db';
+import type { UserRecord, FilterCategory, ProtectionType } from '../../types';
+import { db, toggleUserProtected, setUserProtection, bulkSetProtection } from '../../db';
+import {
+  getProtectionInfo,
+  isBadContactForCleaning,
+  formatFollowDate,
+  calculateDaysFollowing,
+} from '../../utils/protection';
 
 interface UserTableProps {
   users: UserRecord[];
   currentFilter: FilterCategory;
+  temporaryDays?: number;
   onEditUser: (user: UserRecord) => void;
   onNewUser?: () => void;
   onRefresh?: () => void;
+  onOpenCleaningAssistant?: () => void;
 }
 
-type SortField = 'username' | 'name' | 'updatedAt';
+type SortField = 'username' | 'name' | 'updatedAt' | 'followedAt';
 type SortOrder = 'asc' | 'desc';
 
 export const UserTable: React.FC<UserTableProps> = ({
   users,
   currentFilter,
+  temporaryDays = 7,
   onEditUser,
   onNewUser,
   onRefresh,
+  onOpenCleaningAssistant,
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [sortField, setSortField] = useState<SortField>('username');
@@ -57,6 +71,12 @@ export const UserTable: React.FC<UserTableProps> = ({
         case 'notFollowingBack':
           if (!(u.iFollow && !u.followsMe)) return false;
           break;
+        case 'cleanUnreciprocal':
+          if (!isBadContactForCleaning(u, temporaryDays)) return false;
+          break;
+        case 'mutual':
+          if (!(u.iFollow && u.followsMe)) return false;
+          break;
         case 'fans':
           if (!(u.followsMe && !u.iFollow)) return false;
           break;
@@ -64,7 +84,7 @@ export const UserTable: React.FC<UserTableProps> = ({
           if (!(u.everFollowed && !u.iFollow)) return false;
           break;
         case 'protected':
-          if (!u.protected) return false;
+          if (!getProtectionInfo(u, temporaryDays).isProtected) return false;
           break;
         case 'all':
         default:
@@ -82,7 +102,7 @@ export const UserTable: React.FC<UserTableProps> = ({
 
       return true;
     });
-  }, [users, currentFilter, searchQuery]);
+  }, [users, currentFilter, searchQuery, temporaryDays]);
 
   // 2. Sort users
   const sortedUsers = useMemo(() => {
@@ -94,6 +114,8 @@ export const UserTable: React.FC<UserTableProps> = ({
         comp = (a.name || '').localeCompare(b.name || '');
       } else if (sortField === 'updatedAt') {
         comp = (a.updatedAt || 0) - (b.updatedAt || 0);
+      } else if (sortField === 'followedAt') {
+        comp = (a.followedAt || 0) - (b.followedAt || 0);
       }
       return sortOrder === 'asc' ? comp : -comp;
     });
@@ -116,9 +138,15 @@ export const UserTable: React.FC<UserTableProps> = ({
     }
   };
 
-  // Quick single protect toggle
-  const handleToggleProtected = async (username: string) => {
-    await toggleUserProtected(username);
+  // Cycle protection: none -> forever -> temporary -> none
+  const handleCycleProtection = async (user: UserRecord) => {
+    const current = getProtectionInfo(user, temporaryDays);
+    let nextType: ProtectionType;
+    if (current.type === 'none') nextType = 'forever';
+    else if (current.type === 'forever') nextType = 'temporary';
+    else nextType = 'none';
+
+    await setUserProtection(user.username, nextType);
     if (onRefresh) onRefresh();
   };
 
@@ -163,20 +191,11 @@ export const UserTable: React.FC<UserTableProps> = ({
   };
 
   // Bulk actions
-  const handleBulkProtect = async (setProtected: boolean) => {
+  const handleBulkSetProtection = async (protectionType: ProtectionType) => {
     const usernames = Array.from(selectedUsernames);
     if (usernames.length === 0) return;
 
-    for (const u of usernames) {
-      const existing = await db.users.get(u);
-      if (existing) {
-        await db.users.put({
-          ...existing,
-          protected: setProtected,
-          updatedAt: Date.now(),
-        });
-      }
-    }
+    await bulkSetProtection(usernames, protectionType);
     setSelectedUsernames(new Set());
     if (onRefresh) onRefresh();
   };
@@ -197,261 +216,332 @@ export const UserTable: React.FC<UserTableProps> = ({
   };
 
   return (
-    <div className="bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden">
-      {/* Table Toolbar */}
-      <div className="p-4 border-b border-slate-100 flex flex-col md:flex-row md:items-center justify-between gap-3">
-        {/* Search */}
-        <div className="relative flex-1 max-w-md">
-          <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-3" />
-          <input
-            type="text"
-            placeholder="Pesquisar por @username ou nome..."
-            value={searchQuery}
-            onChange={(e) => {
-              setSearchQuery(e.target.value);
-              setCurrentPage(1);
-            }}
-            className="w-full pl-9 pr-4 py-2 text-xs bg-slate-50 hover:bg-slate-100/80 focus:bg-white border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-purple-500 transition text-slate-800"
-          />
+    <div className="space-y-4">
+      {/* Banner especial para o filtro de Limpeza de Não Recíprocos */}
+      {currentFilter === 'cleanUnreciprocal' && (
+        <div className="bg-gradient-to-r from-rose-500 via-rose-600 to-amber-600 text-white p-4 sm:p-5 rounded-2xl shadow-sm flex flex-col sm:flex-row sm:items-center justify-between gap-4 animate-in fade-in duration-200">
+          <div className="space-y-1">
+            <div className="flex items-center gap-2">
+              <span className="p-1.5 bg-white/20 rounded-lg text-white">
+                <UserMinus className="w-4 h-4" />
+              </span>
+              <h3 className="text-sm sm:text-base font-bold">
+                Perfis Não Recíprocos para Limpeza ({filteredUsers.length})
+              </h3>
+            </div>
+            <p className="text-xs text-rose-100 max-w-2xl leading-relaxed">
+              Estes são os contatos que <strong>você segue</strong>, <strong>não te seguem de volta</strong> e{' '}
+              <strong>não possuem proteção pra sempre</strong>. Perfis que ainda estão dentro do período de carência temporária ({temporaryDays} dias) foram preservados automaticamente.
+            </p>
+          </div>
+
+          {onOpenCleaningAssistant && (
+            <button
+              onClick={onOpenCleaningAssistant}
+              className="px-4 py-2.5 bg-white hover:bg-rose-50 text-rose-800 font-extrabold text-xs rounded-xl shadow-md transition shrink-0 flex items-center gap-1.5 cursor-pointer self-start sm:self-auto"
+            >
+              <Sparkles className="w-4 h-4 text-rose-600" />
+              <span>Abrir Assistente de Limpeza</span>
+            </button>
+          )}
+        </div>
+      )}
+
+      <div className="bg-white rounded-2xl border border-slate-200 shadow-2xs overflow-hidden">
+        {/* Table Toolbar */}
+        <div className="p-4 border-b border-slate-100 flex flex-col md:flex-row md:items-center justify-between gap-3">
+          {/* Search */}
+          <div className="relative flex-1 max-w-md">
+            <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-3" />
+            <input
+              type="text"
+              placeholder="Pesquisar por @username ou nome..."
+              value={searchQuery}
+              onChange={(e) => {
+                setSearchQuery(e.target.value);
+                setCurrentPage(1);
+              }}
+              className="w-full pl-9 pr-4 py-2 text-xs bg-slate-50 hover:bg-slate-100/80 focus:bg-white border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-purple-500 transition text-slate-800"
+            />
+          </div>
+
+          {/* Bulk Action Controls */}
+          {selectedUsernames.size > 0 && (
+            <div className="flex items-center gap-1.5 flex-wrap animate-in fade-in">
+              <span className="text-xs font-semibold text-slate-500 mr-1">
+                {selectedUsernames.size} selecionado(s):
+              </span>
+              <button
+                onClick={() => handleBulkSetProtection('forever')}
+                className="text-xs px-2.5 py-1.5 bg-purple-50 text-purple-700 hover:bg-purple-100 font-medium rounded-lg transition flex items-center gap-1 cursor-pointer"
+                title="Proteger permanentemente"
+              >
+                <ShieldCheck className="w-3.5 h-3.5" />
+                <span>Pra Sempre</span>
+              </button>
+              <button
+                onClick={() => handleBulkSetProtection('temporary')}
+                className="text-xs px-2.5 py-1.5 bg-amber-50 text-amber-800 hover:bg-amber-100 font-medium rounded-lg transition flex items-center gap-1 cursor-pointer"
+                title={`Proteger temporariamente por ${temporaryDays} dias`}
+              >
+                <Clock className="w-3.5 h-3.5" />
+                <span>Temporária</span>
+              </button>
+              <button
+                onClick={() => handleBulkSetProtection('none')}
+                className="text-xs px-2.5 py-1.5 bg-slate-100 text-slate-700 hover:bg-slate-200 font-medium rounded-lg transition flex items-center gap-1 cursor-pointer"
+                title="Remover proteção"
+              >
+                <ShieldAlert className="w-3.5 h-3.5" />
+                <span>Desproteger</span>
+              </button>
+              <button
+                onClick={handleBulkDelete}
+                className="text-xs px-2.5 py-1.5 bg-rose-50 text-rose-700 hover:bg-rose-100 font-medium rounded-lg transition flex items-center gap-1 cursor-pointer"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>Excluir</span>
+              </button>
+            </div>
+          )}
+
+          {onNewUser && (
+            <button
+              onClick={onNewUser}
+              className="px-3.5 py-2 text-xs font-semibold text-white bg-purple-600 hover:bg-purple-700 rounded-xl shadow-xs transition flex items-center gap-1.5 cursor-pointer shrink-0 ml-auto"
+              title="Cadastrar Novo Usuário Manualmente"
+            >
+              <UserPlus className="w-3.5 h-3.5" />
+              <span>Novo Usuário</span>
+            </button>
+          )}
         </div>
 
-        {/* Bulk Action Controls */}
-        {selectedUsernames.size > 0 && (
-          <div className="flex items-center gap-2 animate-in fade-in">
-            <span className="text-xs font-semibold text-slate-500">
-              {selectedUsernames.size} selecionado(s):
-            </span>
-            <button
-              onClick={() => handleBulkProtect(true)}
-              className="text-xs px-2.5 py-1.5 bg-purple-50 text-purple-700 hover:bg-purple-100 font-medium rounded-lg transition flex items-center gap-1 cursor-pointer"
-            >
-              <ShieldCheck className="w-3.5 h-3.5" />
-              <span>Proteger</span>
-            </button>
-            <button
-              onClick={() => handleBulkProtect(false)}
-              className="text-xs px-2.5 py-1.5 bg-slate-100 text-slate-700 hover:bg-slate-200 font-medium rounded-lg transition flex items-center gap-1 cursor-pointer"
-            >
-              <ShieldAlert className="w-3.5 h-3.5" />
-              <span>Desproteger</span>
-            </button>
-            <button
-              onClick={handleBulkDelete}
-              className="text-xs px-2.5 py-1.5 bg-rose-50 text-rose-700 hover:bg-rose-100 font-medium rounded-lg transition flex items-center gap-1 cursor-pointer"
-            >
-              <Trash2 className="w-3.5 h-3.5" />
-              <span>Excluir</span>
-            </button>
-          </div>
-        )}
-
-        {onNewUser && (
-          <button
-            onClick={onNewUser}
-            className="px-3.5 py-2 text-xs font-semibold text-white bg-purple-600 hover:bg-purple-700 rounded-xl shadow-xs transition flex items-center gap-1.5 cursor-pointer shrink-0 ml-auto"
-            title="Cadastrar Novo Usuário Manualmente"
-          >
-            <UserPlus className="w-3.5 h-3.5" />
-            <span>Novo Usuário</span>
-          </button>
-        )}
-      </div>
-
-      {/* Table Content */}
-      <div className="overflow-x-auto">
-        <table className="w-full text-left border-collapse">
-          <thead>
-            <tr className="bg-slate-50/70 border-b border-slate-100 text-[11px] font-semibold text-slate-500 uppercase tracking-wider">
-              <th className="py-3 px-4 w-10">
-                <button
-                  onClick={handleToggleSelectAll}
-                  className="text-slate-400 hover:text-slate-600 transition cursor-pointer"
-                >
-                  {allVisibleSelected ? (
-                    <CheckSquare className="w-4 h-4 text-purple-600" />
-                  ) : (
-                    <Square className="w-4 h-4" />
-                  )}
-                </button>
-              </th>
-              <th className="py-3 px-4">
-                <button
-                  onClick={() => handleSort('username')}
-                  className="flex items-center gap-1 hover:text-slate-800 transition cursor-pointer"
-                >
-                  <span>Perfil</span>
-                  <ArrowUpDown className="w-3 h-3" />
-                </button>
-              </th>
-              <th className="py-3 px-4">Eu Sigo</th>
-              <th className="py-3 px-4">Me Segue</th>
-              <th className="py-3 px-4">Já Segui</th>
-              <th className="py-3 px-4 text-center">Whitelist</th>
-              <th className="py-3 px-4 text-right">Ações</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-slate-100 text-xs">
-            {paginatedUsers.length === 0 ? (
-              <tr>
-                <td colSpan={7} className="py-12 text-center text-slate-400">
-                  <div className="flex flex-col items-center justify-center gap-2">
-                    <UserX className="w-8 h-8 text-slate-300" />
-                    <p className="text-sm font-medium text-slate-500">
-                      Nenhum usuário encontrado
-                    </p>
-                    <p className="text-xs text-slate-400 max-w-sm">
-                      {searchQuery
-                        ? 'Nenhum resultado para os termos pesquisados.'
-                        : 'Não há registros nesta categoria. Adicione usuários ou importe um arquivo JSON.'}
-                    </p>
-                  </div>
-                </td>
-              </tr>
-            ) : (
-              paginatedUsers.map((user) => {
-                const isSelected = selectedUsernames.has(user.username);
-
-                return (
-                  <tr
-                    key={user.username}
-                    className={`hover:bg-slate-50/80 transition ${
-                      isSelected ? 'bg-purple-50/30' : ''
-                    }`}
+        {/* Table Content */}
+        <div className="overflow-x-auto">
+          <table className="w-full text-left border-collapse">
+            <thead>
+              <tr className="bg-slate-50/70 border-b border-slate-100 text-[11px] font-semibold text-slate-500 uppercase tracking-wider">
+                <th className="py-3 px-4 w-10">
+                  <button
+                    onClick={handleToggleSelectAll}
+                    className="text-slate-400 hover:text-slate-600 transition cursor-pointer"
                   >
-                    {/* Checkbox */}
-                    <td className="py-3 px-4">
-                      <button
-                        onClick={() => handleToggleSelectOne(user.username)}
-                        className="text-slate-400 hover:text-slate-600 transition cursor-pointer"
-                      >
-                        {isSelected ? (
-                          <CheckSquare className="w-4 h-4 text-purple-600" />
-                        ) : (
-                          <Square className="w-4 h-4" />
-                        )}
-                      </button>
-                    </td>
+                    {allVisibleSelected ? (
+                      <CheckSquare className="w-4 h-4 text-purple-600" />
+                    ) : (
+                      <Square className="w-4 h-4" />
+                    )}
+                  </button>
+                </th>
+                <th className="py-3 px-4">
+                  <button
+                    onClick={() => handleSort('username')}
+                    className="flex items-center gap-1 hover:text-slate-800 transition cursor-pointer"
+                  >
+                    <span>Perfil</span>
+                    <ArrowUpDown className="w-3 h-3" />
+                  </button>
+                </th>
+                <th className="py-3 px-4">Eu Sigo</th>
+                <th className="py-3 px-4">Me Segue</th>
+                <th className="py-3 px-4">
+                  <button
+                    onClick={() => handleSort('followedAt')}
+                    className="flex items-center gap-1 hover:text-slate-800 transition cursor-pointer"
+                  >
+                    <span>Comecei a Seguir</span>
+                    <ArrowUpDown className="w-3 h-3" />
+                  </button>
+                </th>
+                <th className="py-3 px-4">Já Segui</th>
+                <th className="py-3 px-4 text-center">Proteção (Whitelist)</th>
+                <th className="py-3 px-4 text-right">Ações</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100 text-xs">
+              {paginatedUsers.length === 0 ? (
+                <tr>
+                  <td colSpan={8} className="py-12 text-center text-slate-400">
+                    <div className="flex flex-col items-center justify-center gap-2">
+                      <UserX className="w-8 h-8 text-slate-300" />
+                      <p className="text-sm font-medium text-slate-500">
+                        Nenhum usuário encontrado
+                      </p>
+                      <p className="text-xs text-slate-400 max-w-sm">
+                        {searchQuery
+                          ? 'Nenhum resultado para os termos pesquisados.'
+                          : 'Não há registros nesta categoria. Adicione usuários ou sincronize com o Instagram.'}
+                      </p>
+                    </div>
+                  </td>
+                </tr>
+              ) : (
+                paginatedUsers.map((user) => {
+                  const isSelected = selectedUsernames.has(user.username);
+                  const protInfo = getProtectionInfo(user, temporaryDays);
+                  const daysFollowing = calculateDaysFollowing(user.followedAt);
 
-                    {/* Profile */}
-                    <td className="py-3 px-4">
-                      <div className="flex items-center gap-3">
-                        <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-amber-400 via-rose-500 to-purple-600 p-[1.5px] shrink-0">
-                          <div className="w-full h-full rounded-full bg-white flex items-center justify-center font-bold text-[11px] text-purple-700 uppercase">
-                            {user.username.slice(0, 2)}
-                          </div>
-                        </div>
-                        <div>
-                          <div className="flex items-center gap-1.5">
-                            <span className="font-semibold text-slate-900">
-                              @{user.username}
-                            </span>
-                            <a
-                              href={`https://www.instagram.com/${user.username}/`}
-                              target="_blank"
-                              rel="noreferrer"
-                              title="Ver perfil no Instagram"
-                              className="text-slate-300 hover:text-slate-600 transition"
-                            >
-                              <ExternalLink className="w-3 h-3" />
-                            </a>
-                          </div>
-                          <div className="text-[11px] text-slate-500">
-                            {user.name || user.username}
-                          </div>
-                          {user.notes && (
-                            <div className="text-[10px] text-purple-600 font-mono mt-0.5">
-                              {user.notes}
-                            </div>
+                  return (
+                    <tr
+                      key={user.username}
+                      className={`hover:bg-slate-50/80 transition ${
+                        isSelected ? 'bg-purple-50/30' : ''
+                      }`}
+                    >
+                      {/* Checkbox */}
+                      <td className="py-3 px-4">
+                        <button
+                          onClick={() => handleToggleSelectOne(user.username)}
+                          className="text-slate-400 hover:text-slate-600 transition cursor-pointer"
+                        >
+                          {isSelected ? (
+                            <CheckSquare className="w-4 h-4 text-purple-600" />
+                          ) : (
+                            <Square className="w-4 h-4" />
                           )}
+                        </button>
+                      </td>
+
+                      {/* Profile */}
+                      <td className="py-3 px-4">
+                        <div className="flex items-center gap-3">
+                          <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-amber-400 via-rose-500 to-purple-600 p-[1.5px] shrink-0">
+                            <div className="w-full h-full rounded-full bg-white flex items-center justify-center font-bold text-[11px] text-purple-700 uppercase">
+                              {user.username.slice(0, 2)}
+                            </div>
+                          </div>
+                          <div>
+                            <div className="flex items-center gap-1.5">
+                              <span className="font-semibold text-slate-900">
+                                @{user.username}
+                              </span>
+                              <a
+                                href={`https://www.instagram.com/${user.username}/`}
+                                target="_blank"
+                                rel="noreferrer"
+                                title="Ver perfil no Instagram"
+                                className="text-slate-300 hover:text-slate-600 transition"
+                              >
+                                <ExternalLink className="w-3 h-3" />
+                              </a>
+                            </div>
+                            <div className="text-[11px] text-slate-500">
+                              {user.name || user.username}
+                            </div>
+                            {user.notes && (
+                              <div className="text-[10px] text-purple-600 font-mono mt-0.5">
+                                {user.notes}
+                              </div>
+                            )}
+                          </div>
                         </div>
-                      </div>
-                    </td>
+                      </td>
 
-                    {/* Eu Sigo */}
-                    <td className="py-3 px-4">
-                      {user.iFollow ? (
-                        <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium bg-emerald-100 text-emerald-800">
-                          ✓ Sim
-                        </span>
-                      ) : (
-                        <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium bg-slate-100 text-slate-500">
-                          Não
-                        </span>
-                      )}
-                    </td>
+                      {/* Eu Sigo */}
+                      <td className="py-3 px-4">
+                        {user.iFollow ? (
+                          <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium bg-emerald-100 text-emerald-800">
+                            ✓ Sim
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium bg-slate-100 text-slate-500">
+                            Não
+                          </span>
+                        )}
+                      </td>
 
-                    {/* Me Segue */}
-                    <td className="py-3 px-4">
-                      {user.followsMe ? (
-                        <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium bg-blue-100 text-blue-800">
-                          ✓ Sim
-                        </span>
-                      ) : (
-                        <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium bg-slate-100 text-slate-500">
-                          Não
-                        </span>
-                      )}
-                    </td>
+                      {/* Me Segue */}
+                      <td className="py-3 px-4">
+                        {user.followsMe ? (
+                          <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium bg-blue-100 text-blue-800">
+                            ✓ Sim
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium bg-slate-100 text-slate-500">
+                            Não
+                          </span>
+                        )}
+                      </td>
 
-                    {/* Já Segui */}
-                    <td className="py-3 px-4">
-                      {user.everFollowed ? (
-                        <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium bg-amber-100 text-amber-800">
-                          ↺ Sim
-                        </span>
-                      ) : (
-                        <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium bg-slate-100 text-slate-500">
-                          Não
-                        </span>
-                      )}
-                    </td>
+                      {/* Comecei a Seguir */}
+                      <td className="py-3 px-4">
+                        {user.followedAt ? (
+                          <div className="flex items-center gap-1 text-slate-700">
+                            <Calendar className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                            <div>
+                              <div className="font-medium text-[11px]">
+                                {formatFollowDate(user.followedAt)}
+                              </div>
+                              <div className="text-[10px] text-slate-400">
+                                {daysFollowing === 0 ? 'Hoje' : `Há ${daysFollowing}d`}
+                              </div>
+                            </div>
+                          </div>
+                        ) : (
+                          <span className="text-slate-400 text-[11px]">–</span>
+                        )}
+                      </td>
 
-                    {/* Whitelist (Protegido) */}
-                    <td className="py-3 px-4 text-center">
-                      <button
-                        onClick={() => handleToggleProtected(user.username)}
-                        title={
-                          user.protected
-                            ? 'Protegido na whitelist. Clique para remover.'
-                            : 'Clique para proteger este perfil.'
-                        }
-                        className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-semibold transition cursor-pointer ${
-                          user.protected
-                            ? 'bg-purple-100 text-purple-700 hover:bg-purple-200 border border-purple-200'
-                            : 'bg-slate-100 text-slate-400 hover:text-purple-600 hover:bg-purple-50'
-                        }`}
-                      >
-                        <Shield className="w-3 h-3" />
-                        <span>{user.protected ? 'Protegido' : 'Proteger'}</span>
-                      </button>
-                    </td>
+                      {/* Já Segui */}
+                      <td className="py-3 px-4">
+                        {user.everFollowed ? (
+                          <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium bg-amber-100 text-amber-800">
+                            ↺ Sim
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium bg-slate-100 text-slate-500">
+                            Não
+                          </span>
+                        )}
+                      </td>
 
-                    {/* Ações */}
-                    <td className="py-3 px-4 text-right">
-                      <div className="flex items-center justify-end gap-1">
+                      {/* Whitelist (Protegido) */}
+                      <td className="py-3 px-4 text-center">
                         <button
-                          onClick={() => onEditUser(user)}
-                          title="Editar usuário"
-                          className="p-1.5 text-slate-400 hover:text-purple-600 hover:bg-purple-50 rounded-lg transition cursor-pointer"
+                          onClick={() => handleCycleProtection(user)}
+                          title="Clique para alternar proteção: Pra Sempre -> Temporária -> Nenhuma"
+                          className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-semibold transition cursor-pointer border ${protInfo.badgeColor}`}
                         >
-                          <Edit2 className="w-3.5 h-3.5" />
+                          {protInfo.type === 'forever' && <Shield className="w-3 h-3" />}
+                          {protInfo.type === 'temporary_active' && <Clock className="w-3 h-3" />}
+                          {protInfo.type === 'temporary_expired' && <ShieldAlert className="w-3 h-3" />}
+                          {protInfo.type === 'none' && <Shield className="w-3 h-3 opacity-40" />}
+                          <span>
+                            {protInfo.type === 'forever' && 'Pra Sempre'}
+                            {protInfo.type === 'temporary_active' && `Temp (${protInfo.daysRemaining}d)`}
+                            {protInfo.type === 'temporary_expired' && 'Liberado'}
+                            {protInfo.type === 'none' && 'Proteger'}
+                          </span>
                         </button>
-                        <button
-                          onClick={() => handleDeleteUser(user.username)}
-                          title="Excluir da base"
-                          className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition cursor-pointer"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                );
-              })
-            )}
-          </tbody>
-        </table>
-      </div>
+                      </td>
+
+                      {/* Ações */}
+                      <td className="py-3 px-4 text-right">
+                        <div className="flex items-center justify-end gap-1">
+                          <button
+                            onClick={() => onEditUser(user)}
+                            title="Editar usuário"
+                            className="p-1.5 text-slate-400 hover:text-purple-600 hover:bg-purple-50 rounded-lg transition cursor-pointer"
+                          >
+                            <Edit2 className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            onClick={() => handleDeleteUser(user.username)}
+                            title="Excluir da base"
+                            className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition cursor-pointer"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })
+              )}
+            </tbody>
+          </table>
+        </div>
 
       {/* Pagination Footer */}
       {totalPages > 1 && (
@@ -485,6 +575,7 @@ export const UserTable: React.FC<UserTableProps> = ({
           </div>
         </div>
       )}
+      </div>
     </div>
   );
 };

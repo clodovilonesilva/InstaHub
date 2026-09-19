@@ -1,5 +1,6 @@
 import Dexie, { type Table } from 'dexie';
-import type { UserRecord, UserStatusResult, SyncMode, InstagramSyncSummary } from '../types';
+import type { UserRecord, UserStatusResult, SyncMode, InstagramSyncSummary, ProtectionType } from '../types';
+import { getProtectionInfo, isBadContactForCleaning } from '../utils/protection';
 
 export class InstaHubDatabase extends Dexie {
   users!: Table<UserRecord, string>;
@@ -8,6 +9,9 @@ export class InstaHubDatabase extends Dexie {
     super('InstaHubDB');
     this.version(1).stores({
       users: 'username, name, iFollow, followsMe, everFollowed, protected, updatedAt',
+    });
+    this.version(2).stores({
+      users: 'username, name, iFollow, followsMe, everFollowed, protected, updatedAt, followedAt, protectionType',
     });
   }
 }
@@ -23,7 +27,8 @@ export function normalizeUsername(raw: string): string {
  * Quick batch query to check a list of usernames
  */
 export async function checkUsersBatch(
-  rawUsernames: string[]
+  rawUsernames: string[],
+  tempDays: number = 7
 ): Promise<Record<string, UserStatusResult>> {
   const normalizedMap = new Map<string, string>();
   for (const raw of rawUsernames) {
@@ -52,6 +57,7 @@ export async function checkUsersBatch(
         found: false,
         status: 'neverFollowed',
         isProtected: false,
+        protectionType: 'none',
       };
     } else {
       let status: 'following' | 'previouslyFollowed' | 'neverFollowed' = 'neverFollowed';
@@ -61,11 +67,17 @@ export async function checkUsersBatch(
         status = 'previouslyFollowed';
       }
 
+      const protInfo = getProtectionInfo(user, tempDays);
+
       results[normUsername] = {
         username: normUsername,
         found: true,
         status,
-        isProtected: !!user.protected,
+        isProtected: protInfo.isProtected,
+        protectionType: user.protectionType || (user.protected ? 'forever' : 'none'),
+        followedAt: user.followedAt,
+        daysRemaining: protInfo.daysRemaining,
+        isTemporaryActive: protInfo.type === 'temporary_active',
         user,
       };
     }
@@ -80,7 +92,8 @@ export async function checkUsersBatch(
 export async function recordFollowInteraction(
   usernameRaw: string,
   name?: string,
-  action: 'follow' | 'unfollow' = 'follow'
+  action: 'follow' | 'unfollow' = 'follow',
+  followedAt?: number
 ): Promise<UserRecord> {
   const username = normalizeUsername(usernameRaw);
   if (!username) throw new Error('Username inválido');
@@ -91,25 +104,33 @@ export async function recordFollowInteraction(
   let updatedRecord: UserRecord;
 
   if (action === 'follow') {
+    const followDate = followedAt || existing?.followedAt || now;
+    const existingType = existing?.protectionType || (existing?.protected ? 'forever' : 'none');
+
     updatedRecord = {
       username,
       name: name || existing?.name || username,
       iFollow: true,
       followsMe: existing ? existing.followsMe : false,
       everFollowed: true, // Quando segue, já seguiu vira true
-      protected: existing ? existing.protected : false,
+      protected: existingType !== 'none',
+      protectionType: existingType,
+      followedAt: followDate,
       updatedAt: now,
       notes: existing?.notes,
     };
   } else {
     // Unfollow
+    const existingType = existing?.protectionType || (existing?.protected ? 'forever' : 'none');
     updatedRecord = {
       username,
       name: name || existing?.name || username,
       iFollow: false,
       followsMe: existing ? existing.followsMe : false,
       everFollowed: true, // Já segui permanece true mesmo após unfollow
-      protected: existing ? existing.protected : false,
+      protected: existingType !== 'none',
+      protectionType: existingType,
+      followedAt: existing?.followedAt,
       updatedAt: now,
       notes: existing?.notes,
     };
@@ -120,10 +141,11 @@ export async function recordFollowInteraction(
 }
 
 /**
- * Toggle or set protected (whitelist) status
+ * Define explicitamente o tipo de proteção de um perfil
  */
-export async function toggleUserProtected(
+export async function setUserProtection(
   usernameRaw: string,
+  protectionType: ProtectionType,
   name?: string
 ): Promise<UserRecord> {
   const username = normalizeUsername(usernameRaw);
@@ -131,11 +153,14 @@ export async function toggleUserProtected(
 
   const existing = await db.users.get(username);
   const now = Date.now();
+  const isProt = protectionType !== 'none';
 
   const updatedRecord: UserRecord = existing
     ? {
         ...existing,
-        protected: !existing.protected,
+        protected: isProt,
+        protectionType,
+        followedAt: existing.followedAt || (existing.iFollow ? now : undefined),
         updatedAt: now,
       }
     : {
@@ -144,12 +169,91 @@ export async function toggleUserProtected(
         iFollow: false,
         followsMe: false,
         everFollowed: false,
-        protected: true,
+        protected: isProt,
+        protectionType,
         updatedAt: now,
       };
 
   await db.users.put(updatedRecord);
   return updatedRecord;
+}
+
+/**
+ * Toggle or set protected (whitelist) status
+ */
+export async function toggleUserProtected(
+  usernameRaw: string,
+  name?: string,
+  preferredType?: ProtectionType
+): Promise<UserRecord> {
+  const username = normalizeUsername(usernameRaw);
+  if (!username) throw new Error('Username inválido');
+
+  const existing = await db.users.get(username);
+  const now = Date.now();
+
+  let newProtectionType: ProtectionType;
+  if (preferredType) {
+    newProtectionType = preferredType;
+  } else if (!existing) {
+    newProtectionType = 'forever';
+  } else {
+    const currentType = existing.protectionType || (existing.protected ? 'forever' : 'none');
+    newProtectionType = currentType === 'none' ? 'forever' : 'none';
+  }
+
+  const isProt = newProtectionType !== 'none';
+
+  const updatedRecord: UserRecord = existing
+    ? {
+        ...existing,
+        protected: isProt,
+        protectionType: newProtectionType,
+        followedAt: existing.followedAt || (existing.iFollow ? now : undefined),
+        updatedAt: now,
+      }
+    : {
+        username,
+        name: name || username,
+        iFollow: false,
+        followsMe: false,
+        everFollowed: false,
+        protected: isProt,
+        protectionType: newProtectionType,
+        updatedAt: now,
+      };
+
+  await db.users.put(updatedRecord);
+  return updatedRecord;
+}
+
+/**
+ * Atualiza em massa o tipo de proteção para uma lista de usernames
+ */
+export async function bulkSetProtection(
+  rawUsernames: string[],
+  protectionType: ProtectionType
+): Promise<{ modifiedCount: number }> {
+  const queryKeys = rawUsernames.map((u) => normalizeUsername(u)).filter(Boolean);
+  if (queryKeys.length === 0) return { modifiedCount: 0 };
+
+  const now = Date.now();
+  const isProt = protectionType !== 'none';
+  const existingUsers = await db.users.where('username').anyOf(queryKeys).toArray();
+
+  const toSave: UserRecord[] = existingUsers.map((u) => ({
+    ...u,
+    protected: isProt,
+    protectionType,
+    followedAt: u.followedAt || (u.iFollow ? now : undefined),
+    updatedAt: now,
+  }));
+
+  if (toSave.length > 0) {
+    await db.users.bulkPut(toSave);
+  }
+
+  return { modifiedCount: toSave.length };
 }
 
 /**
@@ -196,13 +300,32 @@ export async function importUsersFromJson(rawJson: unknown): Promise<{
     const iFollow = Boolean(item.iFollow);
     const everFollowed = iFollow ? true : Boolean(item.everFollowed ?? existing?.everFollowed ?? false);
 
+    const rawProtType = item.protectionType;
+    let protectionType: ProtectionType;
+    if (rawProtType === 'forever' || rawProtType === 'temporary' || rawProtType === 'none') {
+      protectionType = rawProtType;
+    } else if (item.protected) {
+      protectionType = 'forever';
+    } else {
+      protectionType = existing?.protectionType || (existing?.protected ? 'forever' : 'none');
+    }
+
+    const followedAt =
+      typeof item.followedAt === 'number'
+        ? item.followedAt
+        : iFollow
+        ? existing?.followedAt || now
+        : existing?.followedAt;
+
     const recordToSave: UserRecord = {
       username,
       name: item.name ? String(item.name).trim() : existing?.name || username,
       iFollow,
       followsMe: Boolean(item.followsMe),
       everFollowed,
-      protected: Boolean(item.protected),
+      protected: protectionType !== 'none',
+      protectionType,
+      followedAt,
       updatedAt: now,
       notes: typeof item.notes === 'string' ? item.notes : existing?.notes,
     };
@@ -229,27 +352,53 @@ export interface DashboardStats {
   iFollow: number;
   followsMe: number;
   notFollowingBack: number;
+  cleanUnreciprocal: number;
+  mutual: number;
   fans: number;
   everFollowed: number;
   protectedCount: number;
+  protectedForeverCount: number;
+  protectedTemporaryActiveCount: number;
+  protectedTemporaryExpiredCount: number;
 }
 
-export async function getDashboardStats(): Promise<DashboardStats> {
+export async function getDashboardStats(tempDays: number = 7): Promise<DashboardStats> {
   const all = await db.users.toArray();
   let iFollow = 0;
   let followsMe = 0;
   let notFollowingBack = 0;
+  let cleanUnreciprocal = 0;
+  let mutual = 0;
   let fans = 0;
   let everFollowed = 0;
   let protectedCount = 0;
+  let protectedForeverCount = 0;
+  let protectedTemporaryActiveCount = 0;
+  let protectedTemporaryExpiredCount = 0;
 
   for (const u of all) {
     if (u.iFollow) iFollow++;
     if (u.followsMe) followsMe++;
     if (u.iFollow && !u.followsMe) notFollowingBack++;
+    if (u.iFollow && u.followsMe) mutual++;
     if (u.followsMe && !u.iFollow) fans++;
     if (u.everFollowed && !u.iFollow) everFollowed++;
-    if (u.protected) protectedCount++;
+
+    const protInfo = getProtectionInfo(u, tempDays);
+    if (protInfo.isProtected) {
+      protectedCount++;
+    }
+    if (protInfo.type === 'forever') {
+      protectedForeverCount++;
+    } else if (protInfo.type === 'temporary_active') {
+      protectedTemporaryActiveCount++;
+    } else if (protInfo.type === 'temporary_expired') {
+      protectedTemporaryExpiredCount++;
+    }
+
+    if (isBadContactForCleaning(u, tempDays)) {
+      cleanUnreciprocal++;
+    }
   }
 
   return {
@@ -257,9 +406,14 @@ export async function getDashboardStats(): Promise<DashboardStats> {
     iFollow,
     followsMe,
     notFollowingBack,
+    cleanUnreciprocal,
+    mutual,
     fans,
     everFollowed,
     protectedCount,
+    protectedForeverCount,
+    protectedTemporaryActiveCount,
+    protectedTemporaryExpiredCount,
   };
 }
 
@@ -358,10 +512,21 @@ export async function syncInstagramUsers(
         unfollowedMeCount++;
       }
 
+      let newFollowedAt = existing.followedAt;
+      if (newIFollow && !existing.iFollow) {
+        newFollowedAt = now;
+      } else if (newIFollow && !newFollowedAt) {
+        newFollowedAt = now;
+      }
+
+      const existingProtType =
+        existing.protectionType || (existing.protected ? 'forever' : 'none');
+
       const changed =
         existing.iFollow !== newIFollow ||
         existing.followsMe !== newFollowsMe ||
         existing.everFollowed !== newEverFollowed ||
+        existing.followedAt !== newFollowedAt ||
         (displayName && displayName !== username && existing.name !== displayName);
 
       if (changed) {
@@ -372,6 +537,9 @@ export async function syncInstagramUsers(
           iFollow: newIFollow,
           followsMe: newFollowsMe,
           everFollowed: newEverFollowed,
+          followedAt: newFollowedAt,
+          protected: existingProtType !== 'none',
+          protectionType: existingProtType,
           updatedAt: now,
         });
       }
@@ -383,7 +551,9 @@ export async function syncInstagramUsers(
         iFollow: newIFollow,
         followsMe: newFollowsMe,
         everFollowed: newEverFollowed,
+        followedAt: newIFollow ? now : undefined,
         protected: false,
+        protectionType: 'none',
         updatedAt: now,
       });
     }
@@ -407,11 +577,15 @@ export async function syncInstagramUsers(
 }
 
 /**
- * Adiciona todos os usuários que sigo atualmente (iFollow = true) aos protegidos (whitelist).
+ * Adiciona todos os usuários que sigo atualmente aos protegidos (whitelist).
  */
-export async function protectAllCurrentFollowing(): Promise<{ modifiedCount: number }> {
+export async function protectAllCurrentFollowing(
+  protectionType: ProtectionType = 'forever'
+): Promise<{ modifiedCount: number }> {
   const allUsers = await db.users.toArray();
-  const toProtect = allUsers.filter((u) => u.iFollow && !u.protected);
+  const toProtect = allUsers.filter(
+    (u) => u.iFollow && (!u.protectionType || u.protectionType === 'none')
+  );
 
   if (toProtect.length === 0) {
     return { modifiedCount: 0 };
@@ -421,6 +595,8 @@ export async function protectAllCurrentFollowing(): Promise<{ modifiedCount: num
   const updated: UserRecord[] = toProtect.map((u) => ({
     ...u,
     protected: true,
+    protectionType,
+    followedAt: u.followedAt || now,
     updatedAt: now,
   }));
 
@@ -429,11 +605,13 @@ export async function protectAllCurrentFollowing(): Promise<{ modifiedCount: num
 }
 
 /**
- * Remove o status de protegido (whitelist) de todos os usuários da base de dados.
+ * Remove o status de protegido de todos os usuários da base de dados.
  */
 export async function removeAllProtected(): Promise<{ modifiedCount: number }> {
   const allUsers = await db.users.toArray();
-  const toUnprotect = allUsers.filter((u) => u.protected);
+  const toUnprotect = allUsers.filter(
+    (u) => u.protected || (u.protectionType && u.protectionType !== 'none')
+  );
 
   if (toUnprotect.length === 0) {
     return { modifiedCount: 0 };
@@ -443,11 +621,20 @@ export async function removeAllProtected(): Promise<{ modifiedCount: number }> {
   const updated: UserRecord[] = toUnprotect.map((u) => ({
     ...u,
     protected: false,
+    protectionType: 'none',
     updatedAt: now,
   }));
 
   await db.users.bulkPut(updated);
   return { modifiedCount: updated.length };
+}
+
+/**
+ * Retorna os contatos que não me seguiram de volta e não possuem proteção pra sempre
+ */
+export async function getBadContactsForCleaning(tempDays: number = 7): Promise<UserRecord[]> {
+  const all = await db.users.toArray();
+  return all.filter((u) => isBadContactForCleaning(u, tempDays));
 }
 
 /**

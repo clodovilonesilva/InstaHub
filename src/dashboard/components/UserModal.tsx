@@ -1,6 +1,17 @@
 import React, { useState, useEffect } from 'react';
-import { X, UserPlus, Save, Shield, UserCheck, Users, History, FileText } from 'lucide-react';
-import type { UserRecord } from '../../types';
+import {
+  X,
+  UserPlus,
+  Save,
+  Shield,
+  UserCheck,
+  Users,
+  History,
+  FileText,
+  Calendar,
+  Clock,
+} from 'lucide-react';
+import type { UserRecord, ProtectionType } from '../../types';
 import { normalizeUsername, db } from '../../db';
 
 interface UserModalProps {
@@ -21,7 +32,8 @@ export const UserModal: React.FC<UserModalProps> = ({
   const [iFollow, setIFollow] = useState(false);
   const [followsMe, setFollowsMe] = useState(false);
   const [everFollowed, setEverFollowed] = useState(false);
-  const [isProtected, setIsProtected] = useState(false);
+  const [protectionType, setProtectionType] = useState<ProtectionType>('none');
+  const [followedDateString, setFollowedDateString] = useState('');
   const [notes, setNotes] = useState('');
   const [error, setError] = useState('');
 
@@ -34,7 +46,22 @@ export const UserModal: React.FC<UserModalProps> = ({
       setIFollow(Boolean(userToEdit.iFollow));
       setFollowsMe(Boolean(userToEdit.followsMe));
       setEverFollowed(Boolean(userToEdit.everFollowed));
-      setIsProtected(Boolean(userToEdit.protected));
+      setProtectionType(
+        userToEdit.protectionType || (userToEdit.protected ? 'forever' : 'none')
+      );
+      if (userToEdit.followedAt) {
+        try {
+          const d = new Date(userToEdit.followedAt);
+          const yyyy = d.getFullYear();
+          const mm = String(d.getMonth() + 1).padStart(2, '0');
+          const dd = String(d.getDate()).padStart(2, '0');
+          setFollowedDateString(`${yyyy}-${mm}-${dd}`);
+        } catch {
+          setFollowedDateString('');
+        }
+      } else {
+        setFollowedDateString('');
+      }
       setNotes(userToEdit.notes || '');
     } else {
       setUsername('');
@@ -42,7 +69,8 @@ export const UserModal: React.FC<UserModalProps> = ({
       setIFollow(false);
       setFollowsMe(false);
       setEverFollowed(false);
-      setIsProtected(false);
+      setProtectionType('none');
+      setFollowedDateString('');
       setNotes('');
     }
     setError('');
@@ -52,10 +80,25 @@ export const UserModal: React.FC<UserModalProps> = ({
 
   const handleIFollowChange = (checked: boolean) => {
     setIFollow(checked);
-    // Business rule: If you follow someone, everFollowed must be true
+    // Se passar a seguir e não tiver data informada, preenche com hoje
     if (checked) {
       setEverFollowed(true);
+      if (!followedDateString) {
+        const today = new Date();
+        const yyyy = today.getFullYear();
+        const mm = String(today.getMonth() + 1).padStart(2, '0');
+        const dd = String(today.getDate()).padStart(2, '0');
+        setFollowedDateString(`${yyyy}-${mm}-${dd}`);
+      }
     }
+  };
+
+  const handleSetTodayFollowDate = () => {
+    const today = new Date();
+    const yyyy = today.getFullYear();
+    const mm = String(today.getMonth() + 1).padStart(2, '0');
+    const dd = String(today.getDate()).padStart(2, '0');
+    setFollowedDateString(`${yyyy}-${mm}-${dd}`);
   };
 
   const handleSave = async (e: React.FormEvent) => {
@@ -68,13 +111,25 @@ export const UserModal: React.FC<UserModalProps> = ({
     }
 
     try {
+      let followedAt: number | undefined = undefined;
+      if (followedDateString) {
+        const [y, m, d] = followedDateString.split('-').map(Number);
+        followedAt = new Date(y, m - 1, d, 12, 0, 0).getTime();
+      } else if (iFollow) {
+        followedAt = userToEdit?.followedAt || Date.now();
+      }
+
+      const isProt = protectionType !== 'none';
+
       const record: UserRecord = {
         username: cleanUsername,
         name: name.trim() || cleanUsername,
         iFollow,
         followsMe,
         everFollowed: iFollow ? true : everFollowed,
-        protected: isProtected,
+        protected: isProt,
+        protectionType,
+        followedAt,
         notes: notes.trim() || undefined,
         updatedAt: Date.now(),
       };
@@ -158,6 +213,43 @@ export const UserModal: React.FC<UserModalProps> = ({
             />
           </div>
 
+          {/* Data em que comecei a seguir */}
+          <div>
+            <div className="flex items-center justify-between mb-1">
+              <label className="block text-xs font-semibold text-slate-700 flex items-center gap-1">
+                <Calendar className="w-3.5 h-3.5 text-purple-600" />
+                <span>Dia que Comecei a Seguir</span>
+              </label>
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={handleSetTodayFollowDate}
+                  className="text-[10px] text-purple-600 hover:text-purple-800 font-bold cursor-pointer"
+                >
+                  Definir Hoje
+                </button>
+                {followedDateString && (
+                  <button
+                    type="button"
+                    onClick={() => setFollowedDateString('')}
+                    className="text-[10px] text-slate-400 hover:text-slate-600 cursor-pointer"
+                  >
+                    Limpar
+                  </button>
+                )}
+              </div>
+            </div>
+            <input
+              type="date"
+              value={followedDateString}
+              onChange={(e) => setFollowedDateString(e.target.value)}
+              className="w-full px-3 py-2 text-xs bg-white border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-purple-500 text-slate-800"
+            />
+            <p className="text-[10px] text-slate-400 mt-1">
+              Usado para comparar o dia atual com o dia do seguidor na proteção temporária.
+            </p>
+          </div>
+
           {/* Relationship Status Toggles */}
           <div className="pt-2 border-t border-slate-100 space-y-2.5">
             <span className="block text-xs font-semibold text-slate-700">
@@ -209,29 +301,93 @@ export const UserModal: React.FC<UserModalProps> = ({
               </div>
               <input
                 type="checkbox"
-                disabled={iFollow} // Se Eu sigo é true, já segui é obrigatoriamente true
+                disabled={iFollow}
                 checked={iFollow ? true : everFollowed}
                 onChange={(e) => setEverFollowed(e.target.checked)}
                 className="w-4 h-4 text-purple-600 rounded border-slate-300 focus:ring-purple-500 disabled:opacity-60"
               />
             </label>
+          </div>
 
-            {/* Protegido / Whitelist */}
-            <label className="flex items-center justify-between p-2.5 bg-purple-50/50 rounded-xl border border-purple-200/80 cursor-pointer hover:bg-purple-100/40 transition">
-              <div className="flex items-center gap-2 text-xs">
-                <Shield className="w-4 h-4 text-purple-600" />
-                <div>
-                  <span className="font-semibold text-purple-950">Protegido (Whitelist)</span>
-                  <p className="text-[11px] text-purple-700">Imune a recomendações de unfollow</p>
+          {/* Proteção Whitelist: Tipo */}
+          <div className="pt-2 border-t border-slate-100 space-y-2">
+            <span className="block text-xs font-semibold text-slate-700 flex items-center gap-1.5">
+              <Shield className="w-4 h-4 text-purple-600" />
+              <span>Proteção contra Unfollow (Whitelist)</span>
+            </span>
+
+            <div className="grid grid-cols-1 gap-2">
+              <label
+                className={`flex items-center justify-between p-2.5 rounded-xl border cursor-pointer transition ${
+                  protectionType === 'forever'
+                    ? 'bg-purple-50 border-purple-300 text-purple-900 ring-1 ring-purple-400'
+                    : 'bg-white border-slate-200 hover:bg-slate-50 text-slate-700'
+                }`}
+              >
+                <div className="flex items-center gap-2 text-xs">
+                  <Shield className="w-4 h-4 text-purple-600" />
+                  <div>
+                    <span className="font-bold">🛡️ Proteção Pra Sempre</span>
+                    <p className="text-[11px] text-slate-500">Imune a unfollow permanentemente</p>
+                  </div>
                 </div>
-              </div>
-              <input
-                type="checkbox"
-                checked={isProtected}
-                onChange={(e) => setIsProtected(e.target.checked)}
-                className="w-4 h-4 text-purple-600 rounded border-purple-300 focus:ring-purple-500"
-              />
-            </label>
+                <input
+                  type="radio"
+                  name="protectionType"
+                  value="forever"
+                  checked={protectionType === 'forever'}
+                  onChange={() => setProtectionType('forever')}
+                  className="w-4 h-4 text-purple-600 border-slate-300 focus:ring-purple-500"
+                />
+              </label>
+
+              <label
+                className={`flex items-center justify-between p-2.5 rounded-xl border cursor-pointer transition ${
+                  protectionType === 'temporary'
+                    ? 'bg-amber-50 border-amber-300 text-amber-900 ring-1 ring-amber-400'
+                    : 'bg-white border-slate-200 hover:bg-slate-50 text-slate-700'
+                }`}
+              >
+                <div className="flex items-center gap-2 text-xs">
+                  <Clock className="w-4 h-4 text-amber-600" />
+                  <div>
+                    <span className="font-bold">⏳ Proteção Temporária</span>
+                    <p className="text-[11px] text-slate-500">
+                      Liberado automaticamente após o período definido de carência
+                    </p>
+                  </div>
+                </div>
+                <input
+                  type="radio"
+                  name="protectionType"
+                  value="temporary"
+                  checked={protectionType === 'temporary'}
+                  onChange={() => setProtectionType('temporary')}
+                  className="w-4 h-4 text-amber-600 border-slate-300 focus:ring-amber-500"
+                />
+              </label>
+
+              <label
+                className={`flex items-center justify-between p-2.5 rounded-xl border cursor-pointer transition ${
+                  protectionType === 'none'
+                    ? 'bg-slate-100 border-slate-300 text-slate-900'
+                    : 'bg-white border-slate-200 hover:bg-slate-50 text-slate-700'
+                }`}
+              >
+                <div className="text-xs">
+                  <span className="font-medium">Nenhuma proteção</span>
+                  <p className="text-[11px] text-slate-400">Perfil sem whitelist</p>
+                </div>
+                <input
+                  type="radio"
+                  name="protectionType"
+                  value="none"
+                  checked={protectionType === 'none'}
+                  onChange={() => setProtectionType('none')}
+                  className="w-4 h-4 text-slate-600 border-slate-300 focus:ring-slate-500"
+                />
+              </label>
+            </div>
           </div>
 
           <div>

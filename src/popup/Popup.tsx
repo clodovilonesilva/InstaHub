@@ -10,6 +10,7 @@ import {
   Sliders,
   Sparkles,
   RefreshCw,
+  UserMinus,
 } from 'lucide-react';
 import { getDashboardStats } from '../db';
 import { getExtensionSettings, saveExtensionSettings } from '../utils/storage';
@@ -19,21 +20,27 @@ export const Popup: React.FC = () => {
   const [settings, setSettings] = useState<ExtensionSettings>({
     flagsEnabled: true,
     keyboardNavEnabled: true,
+    temporaryProtectionDays: 7,
   });
   const [loading, setLoading] = useState(true);
 
   // Live query for database statistics
   const stats = useLiveQuery(
-    () => getDashboardStats(),
-    [],
+    () => getDashboardStats(settings.temporaryProtectionDays || 7),
+    [settings.temporaryProtectionDays],
     {
       total: 0,
       iFollow: 0,
       followsMe: 0,
       notFollowingBack: 0,
+      cleanUnreciprocal: 0,
+      mutual: 0,
       fans: 0,
       everFollowed: 0,
       protectedCount: 0,
+      protectedForeverCount: 0,
+      protectedTemporaryActiveCount: 0,
+      protectedTemporaryExpiredCount: 0,
     }
   );
 
@@ -74,6 +81,30 @@ export const Popup: React.FC = () => {
     const url = chrome?.runtime?.getURL
       ? chrome.runtime.getURL('dashboard.html?sync=true')
       : 'dashboard.html?sync=true';
+
+    if (typeof chrome !== 'undefined' && chrome.tabs) {
+      chrome.tabs.create({ url });
+    } else {
+      window.open(url, '_blank');
+    }
+  };
+
+  const handleOpenProtection = () => {
+    const url = chrome?.runtime?.getURL
+      ? chrome.runtime.getURL('dashboard.html?tab=protection')
+      : 'dashboard.html?tab=protection';
+
+    if (typeof chrome !== 'undefined' && chrome.tabs) {
+      chrome.tabs.create({ url });
+    } else {
+      window.open(url, '_blank');
+    }
+  };
+
+  const handleOpenCleaning = () => {
+    const url = chrome?.runtime?.getURL
+      ? chrome.runtime.getURL('dashboard.html?clean=true')
+      : 'dashboard.html?clean=true';
 
     if (typeof chrome !== 'undefined' && chrome.tabs) {
       chrome.tabs.create({ url });
@@ -208,6 +239,25 @@ export const Popup: React.FC = () => {
             <div className="bg-white w-4 h-4 rounded-full shadow-sm" />
           </button>
         </div>
+      </div>
+
+      {/* Quick Access Tools */}
+      <div className="grid grid-cols-2 gap-2 mb-2">
+        <button
+          onClick={handleOpenProtection}
+          className="bg-purple-50 hover:bg-purple-100 text-purple-900 border border-purple-200/80 font-semibold text-xs py-2 px-2.5 rounded-xl shadow-2xs flex items-center justify-center gap-1.5 transition cursor-pointer"
+        >
+          <Shield className="w-3.5 h-3.5 text-purple-600" />
+          <span>Central Proteção</span>
+        </button>
+
+        <button
+          onClick={handleOpenCleaning}
+          className="bg-rose-50 hover:bg-rose-100 text-rose-900 border border-rose-200/80 font-semibold text-xs py-2 px-2.5 rounded-xl shadow-2xs flex items-center justify-center gap-1.5 transition cursor-pointer"
+        >
+          <UserMinus className="w-3.5 h-3.5 text-rose-600" />
+          <span>Limpeza ({stats.cleanUnreciprocal})</span>
+        </button>
       </div>
 
       {/* Sync Button */}

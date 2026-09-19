@@ -1051,15 +1051,32 @@ function renderBadge(wrapper: HTMLElement, info: UserStatusResult, username: str
     // 1. Protected Flag (Whitelist)
     if (info.isProtected) {
       const protBadge = document.createElement('span');
-      protBadge.className = 'instahub-badge instahub-badge-protected';
-      protBadge.title = 'Perfil Protegido (Whitelist). Clique para alterar.';
-      protBadge.innerHTML = `<span>🛡️ Protegido</span>`;
+      if (info.isTemporaryActive) {
+        protBadge.className = 'instahub-badge instahub-badge-temp';
+        protBadge.title = `Proteção Temporária Ativa (${info.daysRemaining ?? 0} dias restantes). Clique para alternar.`;
+        protBadge.innerHTML = `<span>⏳ Temp (${info.daysRemaining ?? 0}d)</span>`;
+      } else {
+        protBadge.className = 'instahub-badge instahub-badge-protected';
+        protBadge.title = 'Proteção Pra Sempre (Permanente). Clique para alternar.';
+        protBadge.innerHTML = `<span>🛡️ Pra Sempre</span>`;
+      }
       protBadge.onclick = (e) => {
         e.stopPropagation();
         e.preventDefault();
         handleToggleWhitelist(username);
       };
       wrapper.appendChild(protBadge);
+    } else if (info.protectionType === 'temporary') {
+      const expBadge = document.createElement('span');
+      expBadge.className = 'instahub-badge instahub-badge-expired';
+      expBadge.title = 'Proteção temporária expirada (Liberado). Clique para proteger.';
+      expBadge.innerHTML = `<span>🔓 Liberado</span>`;
+      expBadge.onclick = (e) => {
+        e.stopPropagation();
+        e.preventDefault();
+        handleToggleWhitelist(username);
+      };
+      wrapper.appendChild(expBadge);
     } else {
       const addProtBtn = document.createElement('span');
       addProtBtn.className = 'instahub-badge-protect-toggle';
@@ -1114,13 +1131,34 @@ function renderBadge(wrapper: HTMLElement, info: UserStatusResult, username: str
 }
 
 async function handleToggleWhitelist(username: string) {
+  const current = userStatusCache.get(username);
+  let nextType: 'forever' | 'temporary' | 'none';
+  const currType = current?.protectionType || (current?.isProtected ? 'forever' : 'none');
+  if (currType === 'none') {
+    nextType = 'forever';
+  } else if (currType === 'forever') {
+    nextType = 'temporary';
+  } else {
+    nextType = 'none';
+  }
+
   const res = await sendMessage<UserRecord>({
-    type: 'TOGGLE_PROTECTED',
+    type: 'SET_PROTECTION',
     username,
+    protectionType: nextType,
   });
 
   if (res.success && res.data) {
     const updated = res.data;
+    const isForever = updated.protectionType === 'forever' || (updated.protected && !updated.protectionType);
+    const isTemp = updated.protectionType === 'temporary';
+    const tempDays = settings.temporaryProtectionDays || 7;
+    const diffDays = updated.followedAt
+      ? Math.max(0, Math.floor((Date.now() - updated.followedAt) / (1000 * 60 * 60 * 24)))
+      : 0;
+    const isTempActive = isTemp && diffDays < tempDays;
+    const isProt = isForever || isTempActive;
+
     const newStatus: UserStatusResult = {
       username,
       found: true,
@@ -1129,7 +1167,11 @@ async function handleToggleWhitelist(username: string) {
         : updated.everFollowed
         ? 'previouslyFollowed'
         : 'neverFollowed',
-      isProtected: Boolean(updated.protected),
+      isProtected: isProt,
+      protectionType: updated.protectionType,
+      followedAt: updated.followedAt,
+      daysRemaining: isTemp ? Math.max(0, tempDays - diffDays) : 0,
+      isTemporaryActive: isTempActive,
       user: updated,
     };
     userStatusCache.set(username, newStatus);

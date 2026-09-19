@@ -62,6 +62,30 @@
   transform: scale(1.03);
 }
 
+.instahub-badge-temp {
+  background: linear-gradient(135deg, #fef3c7 0%, #fde68a 100%);
+  color: #92400e;
+  border: 1px solid #fcd34d;
+  cursor: pointer;
+}
+
+.instahub-badge-temp:hover {
+  filter: brightness(0.95);
+  transform: scale(1.03);
+}
+
+.instahub-badge-expired {
+  background: #f1f5f9;
+  color: #64748b;
+  border: 1px solid #cbd5e1;
+  cursor: pointer;
+}
+
+.instahub-badge-expired:hover {
+  background: #e2e8f0;
+  color: #334155;
+}
+
 .instahub-badge-protect-toggle {
   cursor: pointer;
   opacity: 0.6;

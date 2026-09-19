@@ -14,6 +14,7 @@ import {
   Users,
   Database,
   X,
+  UserMinus,
 } from 'lucide-react';
 import {
   protectAllCurrentFollowing,
@@ -24,8 +25,11 @@ import {
 
 interface QuickActionsProps {
   stats: DashboardStats;
+  temporaryDays: number;
   onOpenBackup: () => void;
   onOpenSync: () => void;
+  onOpenCleaningAssistant?: () => void;
+  onOpenProtectionTab?: () => void;
 }
 
 interface ConfirmModalState {
@@ -39,8 +43,11 @@ interface ConfirmModalState {
 
 export const QuickActions: React.FC<QuickActionsProps> = ({
   stats,
+  temporaryDays,
   onOpenBackup,
   onOpenSync,
+  onOpenCleaningAssistant,
+  onOpenProtectionTab,
 }) => {
   const [loadingAction, setLoadingAction] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<{
@@ -205,6 +212,41 @@ export const QuickActions: React.FC<QuickActionsProps> = ({
 
       {/* Action Cards Grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
+        {/* Card: Limpeza de Contatos Não Recíprocos */}
+        <div className="bg-white rounded-2xl p-6 border border-rose-200 shadow-sm hover:shadow-md transition-all flex flex-col justify-between group">
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <div className="w-12 h-12 rounded-xl bg-rose-100 text-rose-700 flex items-center justify-center shadow-xs">
+                <UserMinus className="w-6 h-6" />
+              </div>
+              <span className="text-[11px] uppercase tracking-wider font-bold px-2.5 py-1 rounded-full bg-rose-100 text-rose-800 border border-rose-200">
+                Higienização
+              </span>
+            </div>
+
+            <div>
+              <h3 className="text-base font-bold text-slate-900 group-hover:text-rose-700 transition">
+                Limpeza de Não Recíprocos
+              </h3>
+              <p className="text-xs text-slate-500 mt-1 leading-relaxed">
+                Identifica perfis que você segue, que <strong className="text-slate-700">não te seguem de volta</strong> e que{' '}
+                <strong className="text-slate-700">não possuem proteção permanente</strong> ({stats.cleanUnreciprocal} perfis elegíveis).
+              </p>
+            </div>
+          </div>
+
+          <div className="pt-5 mt-4 border-t border-slate-100 flex flex-col gap-2.5">
+            <button
+              onClick={onOpenCleaningAssistant}
+              disabled={stats.cleanUnreciprocal === 0}
+              className="w-full py-2.5 px-4 rounded-xl text-xs font-semibold text-white bg-rose-600 hover:bg-rose-700 disabled:opacity-50 disabled:cursor-not-allowed shadow-sm shadow-rose-200 transition flex items-center justify-center gap-2 cursor-pointer"
+            >
+              <Sparkles className="w-4 h-4" />
+              <span>Abrir Assistente de Limpeza ({stats.cleanUnreciprocal})</span>
+            </button>
+          </div>
+        </div>
+
         {/* Card 1: Proteger todos os que eu sigo */}
         <div className="bg-white rounded-2xl p-6 border border-slate-200/90 shadow-sm hover:shadow-md transition-all flex flex-col justify-between group">
           <div className="space-y-3">

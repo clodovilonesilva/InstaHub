@@ -3,6 +3,7 @@ import type { ExtensionSettings } from '../types';
 export const DEFAULT_SETTINGS: ExtensionSettings = {
   flagsEnabled: true,
   keyboardNavEnabled: true,
+  temporaryProtectionDays: 7,
 };
 
 export async function getExtensionSettings(): Promise<ExtensionSettings> {
@@ -12,12 +13,27 @@ export async function getExtensionSettings(): Promise<ExtensionSettings> {
       return;
     }
 
-    chrome.storage.local.get(['flagsEnabled', 'keyboardNavEnabled'], (result) => {
-      resolve({
-        flagsEnabled: result.flagsEnabled !== undefined ? Boolean(result.flagsEnabled) : DEFAULT_SETTINGS.flagsEnabled,
-        keyboardNavEnabled: result.keyboardNavEnabled !== undefined ? Boolean(result.keyboardNavEnabled) : DEFAULT_SETTINGS.keyboardNavEnabled,
-      });
-    });
+    chrome.storage.local.get(
+      ['flagsEnabled', 'keyboardNavEnabled', 'temporaryProtectionDays'],
+      (result) => {
+        resolve({
+          flagsEnabled:
+            result.flagsEnabled !== undefined
+              ? Boolean(result.flagsEnabled)
+              : DEFAULT_SETTINGS.flagsEnabled,
+          keyboardNavEnabled:
+            result.keyboardNavEnabled !== undefined
+              ? Boolean(result.keyboardNavEnabled)
+              : DEFAULT_SETTINGS.keyboardNavEnabled,
+          temporaryProtectionDays:
+            result.temporaryProtectionDays !== undefined &&
+            typeof result.temporaryProtectionDays === 'number' &&
+            result.temporaryProtectionDays > 0
+              ? result.temporaryProtectionDays
+              : DEFAULT_SETTINGS.temporaryProtectionDays,
+        });
+      }
+    );
   });
 }
 

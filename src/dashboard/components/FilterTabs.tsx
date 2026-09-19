@@ -7,6 +7,8 @@ import {
   History,
   Shield,
   Layers,
+  UserMinus,
+  Handshake,
 } from 'lucide-react';
 import type { FilterCategory } from '../../types';
 import type { DashboardStats } from '../../db';
@@ -27,25 +29,54 @@ export const FilterTabs: React.FC<FilterTabsProps> = ({
     label: string;
     icon: React.ElementType;
     count: number;
+    badgeStyle?: string;
   }[] = [
-    { id: 'all', label: 'Todos', icon: Layers, count: stats.total },
-    { id: 'iFollow', label: 'Eu Sigo', icon: UserCheck, count: stats.iFollow },
-    { id: 'followsMe', label: 'Me Segue', icon: Users, count: stats.followsMe },
+    {
+      id: 'all',
+      label: 'Todos os Contatos',
+      icon: Layers,
+      count: stats.total,
+    },
+    {
+      id: 'cleanUnreciprocal',
+      label: '🧹 Para Limpeza (Não Recíprocos)',
+      icon: UserMinus,
+      count: stats.cleanUnreciprocal,
+      badgeStyle: 'bg-rose-100 text-rose-800 font-bold',
+    },
     {
       id: 'notFollowingBack',
-      label: 'Não Me Segue de Volta',
+      label: 'Não Me Seguem de Volta',
       icon: UserX,
       count: stats.notFollowingBack,
     },
     {
+      id: 'mutual',
+      label: 'Seguimento Mútuo (Amigos)',
+      icon: Handshake,
+      count: stats.mutual,
+    },
+    {
+      id: 'iFollow',
+      label: 'Quem Eu Sigo',
+      icon: UserCheck,
+      count: stats.iFollow,
+    },
+    {
       id: 'fans',
-      label: 'Me Segue e Eu Não Sigo',
+      label: 'Apenas Me Seguem (Fãs)',
       icon: Heart,
       count: stats.fans,
     },
     {
+      id: 'followsMe',
+      label: 'Quem Me Segue (Geral)',
+      icon: Users,
+      count: stats.followsMe,
+    },
+    {
       id: 'everFollowed',
-      label: 'Já Segui Anteriormente',
+      label: 'Ex-Seguidos (Histórico)',
       icon: History,
       count: stats.everFollowed,
     },

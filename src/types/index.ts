@@ -1,10 +1,14 @@
+export type ProtectionType = 'forever' | 'temporary' | 'none';
+
 export interface UserRecord {
   username: string; // Identifier: unique @username (normalized to lowercase without @)
   name: string; // Display name
   iFollow: boolean; // Eu sigo: atualmente sigo esse usuário
   followsMe: boolean; // Me segue: atualmente me segue
   everFollowed: boolean; // Já segui: já segui anteriormente, mesmo que atualmente não siga
-  protected: boolean; // Protegido: indica que o usuário está na whitelist
+  protected: boolean; // Protegido: retrocompatibilidade com versões anteriores
+  protectionType?: ProtectionType; // 'forever' (pra sempre), 'temporary' (temporária com carência) ou 'none'
+  followedAt?: number; // Timestamp (ms) em que comecei a seguir este perfil
   updatedAt?: number; // Timestamp da última alteração
   notes?: string; // Anotações opcionais
 }
@@ -12,6 +16,7 @@ export interface UserRecord {
 export interface ExtensionSettings {
   flagsEnabled: boolean;
   keyboardNavEnabled: boolean;
+  temporaryProtectionDays: number; // Dias de carência para proteção temporária (padrão: 7)
 }
 
 export type FilterCategory =
@@ -19,6 +24,8 @@ export type FilterCategory =
   | 'iFollow'
   | 'followsMe'
   | 'notFollowingBack'
+  | 'cleanUnreciprocal'
+  | 'mutual'
   | 'fans'
   | 'everFollowed'
   | 'protected';
@@ -30,6 +37,10 @@ export interface UserStatusResult {
   found: boolean;
   status: UserFlagStatus;
   isProtected: boolean;
+  protectionType?: ProtectionType;
+  followedAt?: number;
+  daysRemaining?: number;
+  isTemporaryActive?: boolean;
   user?: UserRecord;
 }
 
@@ -63,8 +74,15 @@ export type ExtensionMessage =
       username: string;
       name?: string;
       action: 'follow' | 'unfollow';
+      followedAt?: number;
     }
-  | { type: 'TOGGLE_PROTECTED'; username: string }
+  | { type: 'TOGGLE_PROTECTED'; username: string; protectionType?: ProtectionType }
+  | {
+      type: 'SET_PROTECTION';
+      username: string;
+      protectionType: ProtectionType;
+      name?: string;
+    }
   | { type: 'UPSERT_USER'; user: UserRecord }
   | { type: 'GET_INSTAGRAM_SESSION' }
   | {

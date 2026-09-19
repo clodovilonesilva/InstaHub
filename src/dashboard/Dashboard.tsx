@@ -5,9 +5,12 @@ import {
   ExternalLink,
   Zap,
   Users,
+  Shield,
+  Clock,
 } from 'lucide-react';
 import { db, getDashboardStats } from '../db';
 import type { UserRecord, FilterCategory } from '../types';
+import { getExtensionSettings } from '../utils/storage';
 import { StatsCards } from './components/StatsCards';
 import { FilterTabs } from './components/FilterTabs';
 import { WhitelistQuickAdd } from './components/WhitelistQuickAdd';
@@ -16,40 +19,60 @@ import { UserModal } from './components/UserModal';
 import { ImportExportModal } from './components/ImportExportModal';
 import { SyncModal } from './components/SyncModal';
 import { QuickActions } from './components/QuickActions';
+import { ProtectionCenter } from './components/ProtectionCenter';
+import { CleanUnreciprocalModal } from './components/CleanUnreciprocalModal';
 
 export const Dashboard: React.FC = () => {
-  const [activeTab, setActiveTab] = useState<'users' | 'actions'>('users');
+  const [activeTab, setActiveTab] = useState<'users' | 'protection' | 'actions'>('users');
   const [currentFilter, setCurrentFilter] = useState<FilterCategory>('all');
   const [userModalOpen, setUserModalOpen] = useState(false);
   const [userToEdit, setUserToEdit] = useState<UserRecord | null>(null);
   const [importExportModalOpen, setImportExportModalOpen] = useState(false);
   const [syncModalOpen, setSyncModalOpen] = useState(false);
+  const [cleanModalOpen, setCleanModalOpen] = useState(false);
+  const [temporaryDays, setTemporaryDays] = useState<number>(7);
 
   useEffect(() => {
+    getExtensionSettings().then((s) => {
+      if (s.temporaryProtectionDays) {
+        setTemporaryDays(s.temporaryProtectionDays);
+      }
+    });
+
     const urlParams = new URLSearchParams(window.location.search);
     if (urlParams.get('sync') === 'true') {
       setSyncModalOpen(true);
     }
     if (urlParams.get('tab') === 'actions') {
       setActiveTab('actions');
+    } else if (urlParams.get('tab') === 'protection') {
+      setActiveTab('protection');
+    }
+    if (urlParams.get('clean') === 'true') {
+      setCleanModalOpen(true);
     }
   }, []);
 
   // Live query for all users in database
   const users = useLiveQuery(() => db.users.toArray(), [], []);
 
-  // Live query for overall dashboard metrics
+  // Live query for overall dashboard metrics with temporaryDays calculation
   const stats = useLiveQuery(
-    () => getDashboardStats(),
-    [],
+    () => getDashboardStats(temporaryDays),
+    [temporaryDays],
     {
       total: 0,
       iFollow: 0,
       followsMe: 0,
       notFollowingBack: 0,
+      cleanUnreciprocal: 0,
+      mutual: 0,
       fans: 0,
       everFollowed: 0,
       protectedCount: 0,
+      protectedForeverCount: 0,
+      protectedTemporaryActiveCount: 0,
+      protectedTemporaryExpiredCount: 0,
     }
   );
 
@@ -107,10 +130,10 @@ export const Dashboard: React.FC = () => {
       {/* Main Content Area */}
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-6">
         {/* View Switcher Tabs */}
-        <div className="flex items-center gap-2 mb-6 border-b border-slate-200 pb-3">
+        <div className="flex items-center gap-2 mb-6 border-b border-slate-200 pb-3 overflow-x-auto scrollbar-none">
           <button
             onClick={() => setActiveTab('users')}
-            className={`flex items-center gap-2 px-4 py-2.5 rounded-xl font-semibold text-xs sm:text-sm transition cursor-pointer ${
+            className={`flex items-center gap-2 px-4 py-2.5 rounded-xl font-semibold text-xs sm:text-sm transition cursor-pointer whitespace-nowrap ${
               activeTab === 'users'
                 ? 'bg-slate-900 text-white shadow-sm'
                 : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
@@ -130,30 +153,56 @@ export const Dashboard: React.FC = () => {
           </button>
 
           <button
-            onClick={() => setActiveTab('actions')}
-            className={`flex items-center gap-2 px-4 py-2.5 rounded-xl font-semibold text-xs sm:text-sm transition cursor-pointer ${
-              activeTab === 'actions'
+            onClick={() => setActiveTab('protection')}
+            className={`flex items-center gap-2 px-4 py-2.5 rounded-xl font-semibold text-xs sm:text-sm transition cursor-pointer whitespace-nowrap ${
+              activeTab === 'protection'
                 ? 'bg-purple-600 text-white shadow-sm shadow-purple-200'
+                : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+            }`}
+          >
+            <Shield className="w-4 h-4 text-purple-300" />
+            <span>Central de Proteção & Whitelist</span>
+            <span
+              className={`text-xs px-2 py-0.5 rounded-full font-medium ${
+                activeTab === 'protection'
+                  ? 'bg-purple-700 text-purple-100'
+                  : 'bg-purple-100 text-purple-700'
+              }`}
+            >
+              {stats.protectedCount} 🛡️
+            </span>
+            {stats.protectedTemporaryActiveCount > 0 && (
+              <span
+                className={`text-[11px] px-1.5 py-0.2 rounded-md font-bold ${
+                  activeTab === 'protection'
+                    ? 'bg-amber-400 text-slate-950'
+                    : 'bg-amber-100 text-amber-900'
+                }`}
+              >
+                {stats.protectedTemporaryActiveCount} temp
+              </span>
+            )}
+          </button>
+
+          <button
+            onClick={() => setActiveTab('actions')}
+            className={`flex items-center gap-2 px-4 py-2.5 rounded-xl font-semibold text-xs sm:text-sm transition cursor-pointer whitespace-nowrap ${
+              activeTab === 'actions'
+                ? 'bg-slate-800 text-white shadow-sm'
                 : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
             }`}
           >
             <Zap className={`w-4 h-4 ${activeTab === 'actions' ? 'text-amber-300' : 'text-amber-500'}`} />
             <span>Ações Rápidas & Manutenção</span>
-            {stats.protectedCount > 0 && (
-              <span
-                className={`text-xs px-2 py-0.5 rounded-full font-medium ${
-                  activeTab === 'actions'
-                    ? 'bg-purple-700 text-purple-100'
-                    : 'bg-purple-100 text-purple-700'
-                }`}
-              >
-                {stats.protectedCount} 🛡️
+            {stats.cleanUnreciprocal > 0 && (
+              <span className="text-[11px] px-2 py-0.5 rounded-full bg-rose-100 text-rose-800 font-bold">
+                {stats.cleanUnreciprocal} limpeza
               </span>
             )}
           </button>
         </div>
 
-        {activeTab === 'users' ? (
+        {activeTab === 'users' && (
           <>
             {/* Whitelist Quick Add Widget */}
             <WhitelistQuickAdd />
@@ -174,17 +223,33 @@ export const Dashboard: React.FC = () => {
 
             {/* User Data Table */}
             <UserTable
-              users={users}
+              users={users || []}
               currentFilter={currentFilter}
+              temporaryDays={temporaryDays}
               onEditUser={handleEditUser}
               onNewUser={handleOpenNewUserModal}
+              onOpenCleaningAssistant={() => setCleanModalOpen(true)}
             />
           </>
-        ) : (
+        )}
+
+        {activeTab === 'protection' && (
+          <ProtectionCenter
+            users={users || []}
+            stats={stats}
+            temporaryDays={temporaryDays}
+            onUpdateTemporaryDays={(days) => setTemporaryDays(days)}
+          />
+        )}
+
+        {activeTab === 'actions' && (
           <QuickActions
             stats={stats}
+            temporaryDays={temporaryDays}
             onOpenBackup={() => setImportExportModalOpen(true)}
             onOpenSync={() => setSyncModalOpen(true)}
+            onOpenCleaningAssistant={() => setCleanModalOpen(true)}
+            onOpenProtectionTab={() => setActiveTab('protection')}
           />
         )}
       </main>
@@ -207,6 +272,13 @@ export const Dashboard: React.FC = () => {
       <SyncModal
         isOpen={syncModalOpen}
         onClose={() => setSyncModalOpen(false)}
+      />
+
+      <CleanUnreciprocalModal
+        isOpen={cleanModalOpen}
+        onClose={() => setCleanModalOpen(false)}
+        users={users || []}
+        temporaryDays={temporaryDays}
       />
     </div>
   );

@@ -2,6 +2,7 @@ import {
   checkUsersBatch,
   recordFollowInteraction,
   toggleUserProtected,
+  setUserProtection,
   db,
   normalizeUsername,
 } from '../db';
@@ -44,7 +45,11 @@ chrome.runtime.onMessage.addListener(
           }
 
           case 'CHECK_USERS': {
-            const results = await checkUsersBatch(message.usernames || []);
+            const settings = await getExtensionSettings();
+            const results = await checkUsersBatch(
+              message.usernames || [],
+              settings.temporaryProtectionDays
+            );
             sendResponse({ success: true, data: results });
             break;
           }
@@ -60,14 +65,29 @@ chrome.runtime.onMessage.addListener(
             const updated = await recordFollowInteraction(
               message.username,
               message.name,
-              message.action
+              message.action,
+              message.followedAt
             );
             sendResponse({ success: true, data: updated });
             break;
           }
 
           case 'TOGGLE_PROTECTED': {
-            const updated = await toggleUserProtected(message.username);
+            const updated = await toggleUserProtected(
+              message.username,
+              undefined,
+              message.protectionType
+            );
+            sendResponse({ success: true, data: updated });
+            break;
+          }
+
+          case 'SET_PROTECTION': {
+            const updated = await setUserProtection(
+              message.username,
+              message.protectionType,
+              message.name
+            );
             sendResponse({ success: true, data: updated });
             break;
           }
