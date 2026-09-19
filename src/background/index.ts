@@ -1,6 +1,7 @@
 import {
   checkUsersBatch,
   recordFollowInteraction,
+  recordReciprocalFollow,
   toggleUserProtected,
   setUserProtection,
   db,
@@ -68,6 +69,12 @@ chrome.runtime.onMessage.addListener(
               message.action,
               message.followedAt
             );
+            sendResponse({ success: true, data: updated });
+            break;
+          }
+
+          case 'RECORD_RECIPROCAL_FOLLOW': {
+            const updated = await recordReciprocalFollow(message.username);
             sendResponse({ success: true, data: updated });
             break;
           }

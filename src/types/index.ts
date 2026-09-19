@@ -8,6 +8,7 @@ export interface UserRecord {
   everFollowed: boolean; // Já segui: já segui anteriormente, mesmo que atualmente não siga
   protected: boolean; // Protegido: retrocompatibilidade com versões anteriores
   protectionType?: ProtectionType; // 'forever' (pra sempre), 'temporary' (temporária com carência) ou 'none'
+  protectedAt?: number; // Timestamp (ms) em que a proteção atual foi ativada
   followedAt?: number; // Timestamp (ms) em que comecei a seguir este perfil
   updatedAt?: number; // Timestamp da última alteração
   notes?: string; // Anotações opcionais
@@ -38,6 +39,7 @@ export interface UserStatusResult {
   status: UserFlagStatus;
   isProtected: boolean;
   protectionType?: ProtectionType;
+  protectedAt?: number;
   followedAt?: number;
   daysRemaining?: number;
   isTemporaryActive?: boolean;
@@ -54,6 +56,7 @@ export interface InstagramSyncSummary {
   followersCount: number;
   unfollowedMeCount: number;
   unfollowedByMeCount: number;
+  reciprocalProtectedCount?: number;
 }
 
 export interface InstagramSessionInfo {
@@ -76,6 +79,7 @@ export type ExtensionMessage =
       action: 'follow' | 'unfollow';
       followedAt?: number;
     }
+  | { type: 'RECORD_RECIPROCAL_FOLLOW'; username: string }
   | { type: 'TOGGLE_PROTECTED'; username: string; protectionType?: ProtectionType }
   | {
       type: 'SET_PROTECTION';

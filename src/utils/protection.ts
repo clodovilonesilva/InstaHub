@@ -4,8 +4,10 @@ export interface ProtectionInfo {
   isProtected: boolean;
   type: 'forever' | 'temporary_active' | 'temporary_expired' | 'none';
   daysFollowing: number;
+  daysProtected: number;
   daysRemaining: number;
   followedAt: number | null;
+  protectedAt: number | null;
   label: string;
   badgeColor: string;
 }
@@ -35,8 +37,10 @@ export function getProtectionInfo(
       isProtected: false,
       type: 'none',
       daysFollowing: calculateDaysFollowing(user.followedAt),
+      daysProtected: 0,
       daysRemaining: 0,
       followedAt: user.followedAt || null,
+      protectedAt: null,
       label: 'Sem proteção',
       badgeColor: 'bg-slate-100 text-slate-500 border-slate-200',
     };
@@ -47,40 +51,46 @@ export function getProtectionInfo(
       isProtected: true,
       type: 'forever',
       daysFollowing: calculateDaysFollowing(user.followedAt),
+      daysProtected: 0,
       daysRemaining: Infinity,
       followedAt: user.followedAt || null,
+      protectedAt: user.protectedAt || null,
       label: 'Pra Sempre',
       badgeColor: 'bg-purple-100 text-purple-700 border-purple-200',
     };
   }
 
-  // Proteção Temporária: compara a data atual com o dia em que começou a seguir
-  // Se followedAt não existir, usa updatedAt ou a data atual como fallback
-  const followTime = user.followedAt || user.updatedAt || Date.now();
-  const daysFollowing = calculateDaysFollowing(followTime);
-  const daysRemaining = Math.max(0, tempDays - daysFollowing);
-  const isActive = daysFollowing < tempDays;
+  // Proteção Temporária: compara a data atual com o momento em que a proteção foi ativada (protectedAt)
+  // Se protectedAt não existir (legado), usa followedAt ou updatedAt como fallback retrocompatível
+  const referenceTime = user.protectedAt || user.followedAt || user.updatedAt || Date.now();
+  const daysProtected = calculateDaysFollowing(referenceTime);
+  const daysRemaining = Math.max(0, tempDays - daysProtected);
+  const isActive = daysProtected < tempDays;
 
   if (isActive) {
     return {
       isProtected: true,
       type: 'temporary_active',
-      daysFollowing,
+      daysFollowing: calculateDaysFollowing(user.followedAt),
+      daysProtected,
       daysRemaining,
       followedAt: user.followedAt || null,
+      protectedAt: user.protectedAt || null,
       label: `Temporária (${daysRemaining}d restantes)`,
       badgeColor: 'bg-amber-100 text-amber-800 border-amber-300',
     };
   }
 
   // Prazo expirado / Liberado
-  const daysOverdue = daysFollowing - tempDays;
+  const daysOverdue = daysProtected - tempDays;
   return {
     isProtected: false,
     type: 'temporary_expired',
-    daysFollowing,
+    daysFollowing: calculateDaysFollowing(user.followedAt),
+    daysProtected,
     daysRemaining: 0,
     followedAt: user.followedAt || null,
+    protectedAt: user.protectedAt || null,
     label: daysOverdue > 0 ? `Liberado (expirou há ${daysOverdue}d)` : 'Liberado (prazo atingido)',
     badgeColor: 'bg-rose-50 text-rose-700 border-rose-200',
   };

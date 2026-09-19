@@ -685,6 +685,20 @@ function findRowContainer(link: HTMLElement): HTMLElement | null {
   return null;
 }
 
+function isFollowsYouInHeader(header: HTMLElement): boolean {
+  const text = (header.textContent || '').toLowerCase();
+  const patterns = [
+    'segue você',
+    'segue voce',
+    'follows you',
+    'te sigue',
+    'ti segue',
+    'folgt dir',
+    'vous suit',
+  ];
+  return patterns.some((p) => text.includes(p));
+}
+
 /**
  * Injects badge on a profile page header if viewing someone's profile directly
  */
@@ -734,8 +748,55 @@ function checkProfileHeader() {
     attachButtonListener(header, username);
   }
 
+  const checkReciprocal = (status: UserStatusResult) => {
+    if (
+      isFollowsYouInHeader(header) &&
+      status.user &&
+      (status.user.iFollow || status.user.everFollowed) &&
+      !status.user.followsMe
+    ) {
+      sendMessage<UserRecord>({
+        type: 'RECORD_RECIPROCAL_FOLLOW',
+        username,
+      }).then((res) => {
+        if (res.success && res.data) {
+          const updated = res.data;
+          const tempDays = settings.temporaryProtectionDays || 7;
+          const refTime = updated.protectedAt || updated.followedAt || updated.updatedAt || Date.now();
+          const diffDays = Math.max(0, Math.floor((Date.now() - refTime) / (1000 * 60 * 60 * 24)));
+          const isTemp = updated.protectionType === 'temporary';
+          const isTempActive = isTemp && diffDays < tempDays;
+          const isProt = updated.protectionType === 'forever' || isTempActive;
+
+          const newStatus: UserStatusResult = {
+            username,
+            found: true,
+            status: updated.iFollow
+              ? 'following'
+              : updated.everFollowed
+              ? 'previouslyFollowed'
+              : 'neverFollowed',
+            isProtected: isProt,
+            protectionType: updated.protectionType,
+            followedAt: updated.followedAt,
+            protectedAt: updated.protectedAt,
+            daysRemaining: isTemp ? Math.max(0, tempDays - diffDays) : 0,
+            isTemporaryActive: isTempActive,
+            user: updated,
+          };
+          userStatusCache.set(username, newStatus);
+          if (badgeWrapper) {
+            renderBadge(badgeWrapper, newStatus, username);
+          }
+        }
+      });
+    }
+  };
+
   if (userStatusCache.has(username)) {
-    renderBadge(badgeWrapper, userStatusCache.get(username)!, username);
+    const cached = userStatusCache.get(username)!;
+    renderBadge(badgeWrapper, cached, username);
+    checkReciprocal(cached);
   } else {
     pendingUsernames.add(username);
     scheduleBatchFetch();
@@ -1030,6 +1091,54 @@ function scheduleBatchFetch() {
             `.instahub-badge-wrapper[data-username="${u}"]`
           );
           wrappers.forEach((w) => renderBadge(w, result, u));
+
+          // Se estivermos na página de perfil deste usuário e ele nos segue, verifica reciprocidade
+          const currentPathParts = window.location.pathname.split('/').filter(Boolean);
+          const currentPathUser = currentPathParts.length === 1 ? currentPathParts[0].toLowerCase() : null;
+          if (u === currentPathUser) {
+            const h = document.querySelector('header');
+            if (
+              h &&
+              isFollowsYouInHeader(h) &&
+              result.user &&
+              (result.user.iFollow || result.user.everFollowed) &&
+              !result.user.followsMe
+            ) {
+              sendMessage<UserRecord>({
+                type: 'RECORD_RECIPROCAL_FOLLOW',
+                username: u,
+              }).then((reciprocalRes) => {
+                if (reciprocalRes.success && reciprocalRes.data) {
+                  const updated = reciprocalRes.data;
+                  const tempDays = settings.temporaryProtectionDays || 7;
+                  const refTime = updated.protectedAt || updated.followedAt || updated.updatedAt || Date.now();
+                  const diffDays = Math.max(0, Math.floor((Date.now() - refTime) / (1000 * 60 * 60 * 24)));
+                  const isTemp = updated.protectionType === 'temporary';
+                  const isTempActive = isTemp && diffDays < tempDays;
+                  const isProt = updated.protectionType === 'forever' || isTempActive;
+
+                  const newStatus: UserStatusResult = {
+                    username: u,
+                    found: true,
+                    status: updated.iFollow
+                      ? 'following'
+                      : updated.everFollowed
+                      ? 'previouslyFollowed'
+                      : 'neverFollowed',
+                    isProtected: isProt,
+                    protectionType: updated.protectionType,
+                    followedAt: updated.followedAt,
+                    protectedAt: updated.protectedAt,
+                    daysRemaining: isTemp ? Math.max(0, tempDays - diffDays) : 0,
+                    isTemporaryActive: isTempActive,
+                    user: updated,
+                  };
+                  userStatusCache.set(u, newStatus);
+                  wrappers.forEach((w) => renderBadge(w, newStatus, u));
+                }
+              });
+            }
+          }
         }
       }
     } catch (err) {
@@ -1153,9 +1262,8 @@ async function handleToggleWhitelist(username: string) {
     const isForever = updated.protectionType === 'forever' || (updated.protected && !updated.protectionType);
     const isTemp = updated.protectionType === 'temporary';
     const tempDays = settings.temporaryProtectionDays || 7;
-    const diffDays = updated.followedAt
-      ? Math.max(0, Math.floor((Date.now() - updated.followedAt) / (1000 * 60 * 60 * 24)))
-      : 0;
+    const refTime = updated.protectedAt || updated.followedAt || updated.updatedAt || Date.now();
+    const diffDays = Math.max(0, Math.floor((Date.now() - refTime) / (1000 * 60 * 60 * 24)));
     const isTempActive = isTemp && diffDays < tempDays;
     const isProt = isForever || isTempActive;
 
@@ -1170,6 +1278,7 @@ async function handleToggleWhitelist(username: string) {
       isProtected: isProt,
       protectionType: updated.protectionType,
       followedAt: updated.followedAt,
+      protectedAt: updated.protectedAt,
       daysRemaining: isTemp ? Math.max(0, tempDays - diffDays) : 0,
       isTemporaryActive: isTempActive,
       user: updated,

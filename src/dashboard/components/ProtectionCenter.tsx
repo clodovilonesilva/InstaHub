@@ -558,7 +558,7 @@ export const ProtectionCenter: React.FC<ProtectionCenterProps> = ({
 
                           {protInfo.type === 'temporary_active' && (
                             <div className="text-[10px] text-slate-400">
-                              Dia {protInfo.daysFollowing} de {temporaryDays} (libera em{' '}
+                              Dia {protInfo.daysProtected > 0 ? protInfo.daysProtected : 1} de {temporaryDays} (libera em{' '}
                               {protInfo.daysRemaining}d)
                             </div>
                           )}

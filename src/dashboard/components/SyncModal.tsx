@@ -226,6 +226,15 @@ export const SyncModal: React.FC<SyncModalProps> = ({ isOpen, onClose }) => {
                 </div>
               )}
 
+              {summary.reciprocalProtectedCount !== undefined && summary.reciprocalProtectedCount > 0 && (
+                <div className="p-3 bg-purple-50 border border-purple-200 rounded-xl text-xs text-purple-900 flex items-center gap-2">
+                  <Shield className="w-4 h-4 text-purple-600 shrink-0" />
+                  <span>
+                    <strong>{summary.reciprocalProtectedCount}</strong> perfil(is) que você já seguia começaram a te seguir de volta e receberam <strong>proteção de 7 dias</strong>!
+                  </span>
+                </div>
+              )}
+
               <div className="pt-2 flex justify-end">
                 <button
                   onClick={onClose}

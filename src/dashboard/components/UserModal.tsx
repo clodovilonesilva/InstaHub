@@ -119,7 +119,26 @@ export const UserModal: React.FC<UserModalProps> = ({
         followedAt = userToEdit?.followedAt || Date.now();
       }
 
-      const isProt = protectionType !== 'none';
+      let finalProtectionType = protectionType;
+      let protectedAt = userToEdit?.protectedAt;
+
+      // Se já existia registro de que eu seguia e agora começou a me seguir:
+      const wasFollowing = userToEdit && (userToEdit.iFollow || userToEdit.everFollowed);
+      const startedFollowingMe = userToEdit && !userToEdit.followsMe && followsMe;
+      if (wasFollowing && startedFollowingMe && iFollow) {
+        if (finalProtectionType !== 'forever') {
+          finalProtectionType = 'temporary';
+          protectedAt = Date.now();
+        }
+      } else if (finalProtectionType === 'temporary') {
+        if (!protectedAt || userToEdit?.protectionType !== 'temporary') {
+          protectedAt = Date.now();
+        }
+      } else {
+        protectedAt = undefined;
+      }
+
+      const isProt = finalProtectionType !== 'none';
 
       const record: UserRecord = {
         username: cleanUsername,
@@ -128,7 +147,8 @@ export const UserModal: React.FC<UserModalProps> = ({
         followsMe,
         everFollowed: iFollow ? true : everFollowed,
         protected: isProt,
-        protectionType,
+        protectionType: finalProtectionType,
+        protectedAt,
         followedAt,
         notes: notes.trim() || undefined,
         updatedAt: Date.now(),

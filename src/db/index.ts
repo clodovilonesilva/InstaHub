@@ -13,6 +13,9 @@ export class InstaHubDatabase extends Dexie {
     this.version(2).stores({
       users: 'username, name, iFollow, followsMe, everFollowed, protected, updatedAt, followedAt, protectionType',
     });
+    this.version(3).stores({
+      users: 'username, name, iFollow, followsMe, everFollowed, protected, updatedAt, followedAt, protectionType, protectedAt',
+    });
   }
 }
 
@@ -76,6 +79,7 @@ export async function checkUsersBatch(
         isProtected: protInfo.isProtected,
         protectionType: user.protectionType || (user.protected ? 'forever' : 'none'),
         followedAt: user.followedAt,
+        protectedAt: user.protectedAt,
         daysRemaining: protInfo.daysRemaining,
         isTemporaryActive: protInfo.type === 'temporary_active',
         user,
@@ -154,12 +158,19 @@ export async function setUserProtection(
   const existing = await db.users.get(username);
   const now = Date.now();
   const isProt = protectionType !== 'none';
+  const protectedAt =
+    protectionType === 'temporary'
+      ? existing?.protectionType === 'temporary' && existing?.protectedAt
+        ? existing.protectedAt
+        : now
+      : undefined;
 
   const updatedRecord: UserRecord = existing
     ? {
         ...existing,
         protected: isProt,
         protectionType,
+        protectedAt,
         followedAt: existing.followedAt || (existing.iFollow ? now : undefined),
         updatedAt: now,
       }
@@ -171,6 +182,7 @@ export async function setUserProtection(
         everFollowed: false,
         protected: isProt,
         protectionType,
+        protectedAt,
         updatedAt: now,
       };
 
@@ -203,12 +215,19 @@ export async function toggleUserProtected(
   }
 
   const isProt = newProtectionType !== 'none';
+  const protectedAt =
+    newProtectionType === 'temporary'
+      ? existing?.protectionType === 'temporary' && existing?.protectedAt
+        ? existing.protectedAt
+        : now
+      : undefined;
 
   const updatedRecord: UserRecord = existing
     ? {
         ...existing,
         protected: isProt,
         protectionType: newProtectionType,
+        protectedAt,
         followedAt: existing.followedAt || (existing.iFollow ? now : undefined),
         updatedAt: now,
       }
@@ -220,6 +239,7 @@ export async function toggleUserProtected(
         everFollowed: false,
         protected: isProt,
         protectionType: newProtectionType,
+        protectedAt,
         updatedAt: now,
       };
 
@@ -245,6 +265,7 @@ export async function bulkSetProtection(
     ...u,
     protected: isProt,
     protectionType,
+    protectedAt: protectionType === 'temporary' ? now : undefined,
     followedAt: u.followedAt || (u.iFollow ? now : undefined),
     updatedAt: now,
   }));
@@ -299,15 +320,39 @@ export async function importUsersFromJson(rawJson: unknown): Promise<{
     // Business rule: If iFollow is true, everFollowed must be true as well
     const iFollow = Boolean(item.iFollow);
     const everFollowed = iFollow ? true : Boolean(item.everFollowed ?? existing?.everFollowed ?? false);
+    const followsMe = Boolean(item.followsMe);
+
+    const hadFollowingRecord = existing && (existing.iFollow || existing.everFollowed);
+    const isReciprocalFollow =
+      hadFollowingRecord &&
+      !existing.followsMe &&
+      followsMe &&
+      iFollow;
 
     const rawProtType = item.protectionType;
     let protectionType: ProtectionType;
+    let protectedAt = item.protectedAt || existing?.protectedAt;
+
     if (rawProtType === 'forever' || rawProtType === 'temporary' || rawProtType === 'none') {
       protectionType = rawProtType;
     } else if (item.protected) {
       protectionType = 'forever';
+    } else if (isReciprocalFollow) {
+      const existingProtType = existing?.protectionType || (existing?.protected ? 'forever' : 'none');
+      if (existingProtType !== 'forever') {
+        protectionType = 'temporary';
+        protectedAt = now;
+      } else {
+        protectionType = 'forever';
+      }
     } else {
       protectionType = existing?.protectionType || (existing?.protected ? 'forever' : 'none');
+    }
+
+    if (protectionType === 'temporary' && !protectedAt) {
+      protectedAt = now;
+    } else if (protectionType !== 'temporary') {
+      protectedAt = undefined;
     }
 
     const followedAt =
@@ -321,10 +366,11 @@ export async function importUsersFromJson(rawJson: unknown): Promise<{
       username,
       name: item.name ? String(item.name).trim() : existing?.name || username,
       iFollow,
-      followsMe: Boolean(item.followsMe),
+      followsMe,
       everFollowed,
       protected: protectionType !== 'none',
       protectionType,
+      protectedAt,
       followedAt,
       updatedAt: now,
       notes: typeof item.notes === 'string' ? item.notes : existing?.notes,
@@ -473,6 +519,7 @@ export async function syncInstagramUsers(
   let updatedCount = 0;
   let unfollowedMeCount = 0;
   let unfollowedByMeCount = 0;
+  let reciprocalProtectedCount = 0;
 
   for (const username of allUsernames) {
     const existing = existingMap.get(username);
@@ -522,11 +569,37 @@ export async function syncInstagramUsers(
       const existingProtType =
         existing.protectionType || (existing.protected ? 'forever' : 'none');
 
+      let newProtType = existingProtType;
+      let newProtected = existingProtType !== 'none';
+      let newProtectedAt = existing.protectedAt;
+
+      // REGRA: "toda vez que eu seguir alguem e essa pessoa me seguir, digo, já existia o registro que eu seguia, depois começou a me seguir, ativa uma proteção de 7 dias"
+      const hadFollowingRecord = existing.iFollow || existing.everFollowed;
+      const startedFollowingMe = !existing.followsMe && newFollowsMe;
+      const isReciprocalFollow =
+        (mode === 'both' || mode === 'followers') &&
+        hadFollowingRecord &&
+        startedFollowingMe &&
+        newIFollow;
+
+      if (isReciprocalFollow) {
+        // Se já era 'forever', mantém 'forever' para não diminuir proteção permanente
+        if (existingProtType !== 'forever') {
+          newProtType = 'temporary';
+          newProtected = true;
+          newProtectedAt = now; // Ativa a proteção de 7 dias a partir de agora
+          reciprocalProtectedCount++;
+        }
+      }
+
       const changed =
         existing.iFollow !== newIFollow ||
         existing.followsMe !== newFollowsMe ||
         existing.everFollowed !== newEverFollowed ||
         existing.followedAt !== newFollowedAt ||
+        existing.protected !== newProtected ||
+        existing.protectionType !== newProtType ||
+        existing.protectedAt !== newProtectedAt ||
         (displayName && displayName !== username && existing.name !== displayName);
 
       if (changed) {
@@ -538,8 +611,9 @@ export async function syncInstagramUsers(
           followsMe: newFollowsMe,
           everFollowed: newEverFollowed,
           followedAt: newFollowedAt,
-          protected: existingProtType !== 'none',
-          protectionType: existingProtType,
+          protected: newProtected,
+          protectionType: newProtType,
+          protectedAt: newProtectedAt,
           updatedAt: now,
         });
       }
@@ -554,6 +628,7 @@ export async function syncInstagramUsers(
         followedAt: newIFollow ? now : undefined,
         protected: false,
         protectionType: 'none',
+        protectedAt: undefined,
         updatedAt: now,
       });
     }
@@ -573,6 +648,7 @@ export async function syncInstagramUsers(
     followersCount: followersMap.size,
     unfollowedMeCount,
     unfollowedByMeCount,
+    reciprocalProtectedCount,
   };
 }
 
@@ -596,6 +672,7 @@ export async function protectAllCurrentFollowing(
     ...u,
     protected: true,
     protectionType,
+    protectedAt: protectionType === 'temporary' ? now : undefined,
     followedAt: u.followedAt || now,
     updatedAt: now,
   }));
@@ -622,6 +699,7 @@ export async function removeAllProtected(): Promise<{ modifiedCount: number }> {
     ...u,
     protected: false,
     protectionType: 'none',
+    protectedAt: undefined,
     updatedAt: now,
   }));
 
@@ -642,6 +720,42 @@ export async function getBadContactsForCleaning(tempDays: number = 7): Promise<U
  */
 export async function clearDatabase(): Promise<void> {
   await db.users.clear();
+}
+
+/**
+ * Registra quando um usuário que já seguíamos começou a nos seguir de volta,
+ * ativando a proteção temporária de 7 dias.
+ */
+export async function recordReciprocalFollow(
+  usernameRaw: string
+): Promise<UserRecord | null> {
+  const username = normalizeUsername(usernameRaw);
+  if (!username) return null;
+
+  const existing = await db.users.get(username);
+  if (!existing) return null;
+
+  // Verifica se já existia registro de que eu seguia e ainda não constava que me seguia
+  const hadFollowingRecord = existing.iFollow || existing.everFollowed;
+  if (!hadFollowingRecord) return existing;
+
+  const now = Date.now();
+  const existingProtType =
+    existing.protectionType || (existing.protected ? 'forever' : 'none');
+  const newProtType = existingProtType === 'forever' ? 'forever' : 'temporary';
+  const newProtectedAt = newProtType === 'temporary' ? now : existing.protectedAt;
+
+  const updatedRecord: UserRecord = {
+    ...existing,
+    followsMe: true,
+    protected: true,
+    protectionType: newProtType,
+    protectedAt: newProtectedAt,
+    updatedAt: now,
+  };
+
+  await db.users.put(updatedRecord);
+  return updatedRecord;
 }
 
 
